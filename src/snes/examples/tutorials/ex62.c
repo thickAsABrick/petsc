@@ -225,6 +225,25 @@ PetscErrorCode linear_p_3d(PetscInt dim, PetscReal time, const PetscReal x[], Pe
   return 0;
 }
 
+/*
+  In 2D we use exact solution:
+
+    u = x^2 + y^2
+    v = 2 x^2 - 2xy
+    p = x + y - 1
+    f_x = f_y = 3
+
+  so that the normal traction is given by
+
+    n \cdot (\nabla u + \nabla^T u) \cdot n
+  = n \ cot / 2 u_x     v_x + u_y \ \cdot n = n \cdot / 4x 4x \  \cdot n
+            \ u_y + v_x     2 v_y /                   \ 4x 4y /
+
+  For the top boundary, n = <0 1>, so we have the integral of the normal traction T_N
+
+    T_N = \int_{top} n \cdot (\nabla u + \nabla^T u) \cdot n = \int_{top} 4 y = 4
+*/
+
 PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 {
   const char    *bcTypes[2]  = {"neumann", "dirichlet"};
@@ -863,5 +882,10 @@ int main(int argc, char **argv)
     filter: grep -v "variant HERMITIAN"
     nsize: 5
     args: -run_type full -dm_refine 1 -bc_type dirichlet -interpolate 1 -vel_petscspace_order 2 -pres_petscspace_order 1 -snes_view -snes_error_if_not_converged -show_solution 0 -dm_mat_type is -ksp_type fetidp -ksp_rtol 1.0e-8 -ksp_fetidp_saddlepoint -fetidp_ksp_type cg -fetidp_fieldsplit_p_ksp_max_it 1 -fetidp_fieldsplit_p_ksp_type richardson -fetidp_fieldsplit_p_ksp_richardson_scale 2000 -fetidp_fieldsplit_p_pc_type none -ksp_fetidp_saddlepoint_flip 1 -fetidp_bddc_pc_bddc_vertex_size 3 -dim 3 -simplex 0 -fetidp_pc_discrete_harmonic -fetidp_harmonic_pc_factor_mat_solver_package cholmod -fetidp_harmonic_pc_type cholesky -petscpartitioner_type simple -fetidp_fieldsplit_lag_ksp_type preonly -fetidp_bddc_pc_bddc_dirichlet_pc_factor_mat_solver_package umfpack -fetidp_bddc_pc_bddc_neumann_pc_factor_mat_solver_package umfpack
+  # 2D serial P2/P1 functional tests
+  test:
+    suffix: 2d_p2p1_ntraction_0
+    requires: triangle
+    args: -run_type full -bc_type dirichlet -dm_plex_separate_marker -dm_refine 1 -interpolate 1 -vel_petscspace_order 2 -pres_petscspace_order 1 -show_solution 0
 
 TEST*/
