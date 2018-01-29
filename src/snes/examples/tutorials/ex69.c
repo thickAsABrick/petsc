@@ -129,52 +129,80 @@ static void stokes_momentum_cx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   }
 }
 
-/* A_{II} = 1/2 (Tr(A)^2 - Tr(A^2))
+/* The second invariant of a tensor, according to mathematicians:
+
+   A_{II} = 1/2 (Tr(A)^2 - Tr(A^2))
    A_{ij} = 1/2 (u_{x,ij} + u_{x,ji})
 2D: It is the determinant
   A       = [[a, b], [c, d]]
   A^2     = [[a^2 + bc, ab + bd], [ac + bd, bc + d^2]]
   Tr(A)^2 = a^2 + 2ad + d^2
   Tr(A^2) = a^2 + 2bc + d^2
+  A_{II}  = ad - bc
 3D:
   A       = [[a, b, c], [d, e, f], [g, h, i]]
+  A^2     = [[a^2 + bd + cg, ?, ?], [?, bd + e^2 + fh, ?], [?, ?, cg + fh + i^2]]
   Tr(A)^2 = a^2 + e^2 + i^2 + 2ae + 2ai + 2ei
+  Tr(A^2) = a^2 + e^2 + i^2 + 2bd + 2cg + 2fh
+  A_{II}  = ae + ai + ei - bd + cg + fh
+*/
+static PetscReal SecondInvariantSymmetricMath(PetscInt dim, const PetscScalar u_x[])
+{
+  switch (dim) {
+  case 2:
+    return PetscRealPart(u_x[0]*u_x[3] - u_x[1]*u_x[2]);
+  case 3:
+    return PetscRealPart(u_x[0]*u_x[4] + u_x[0]*u_x[8] + u_x[4]*u_x[8] - u_x[1]*u_x[3] - u_x[2]*u_x[6] - u_x[5]*u_x[7]);
+  }
+  return 0.0;
+}
+
+/* The second invariant of a tensor, according to geophysicists:
+
+   A_{II} = sqrt{1/2 Tr(A^2)}
 */
 static PetscReal SecondInvariantSymmetric(PetscInt dim, const PetscScalar u_x[])
 {
   switch (dim) {
   case 2:
-    return PetscRealPart(u_x[0]*u_x[3] - 0.25*(u_x[1]*u_x[1] + 2.0*u_x[1]*u_x[2] + u_x[2]*u_x[2]));
+    return PetscSqrtReal(0.5*PetscRealPart(u_x[0]*u_x[0] + u_x[1]*u_x[1] + u_x[2]*u_x[2] + u_x[3]*u_x[3]));
+  case 3:
+    return PetscSqrtReal(0.5*PetscRealPart(u_x[0]*u_x[0] + u_x[4]*u_x[4] + u_x[8]*u_x[8] + 2.0*u_x[1]*u_x[3] + 2.0*u_x[2]*u_x[6] + 2.0*u_x[5]*u_x[7]));
   }
   return 0.0;
 }
 
+/* Assumes that u_x[] is in 1/s, x[] is in km, T is in K */
 static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal T)
 {
+  const PetscReal z       = x[dim-1];                            /* ??? Depth, km DO I NEED TO INVERT? */
   const PetscReal R       = 8.314459848e-3;                      /* Gas constant kJ/K mol */
   const PetscReal g       = 9.8;                                 /* Acceleration due to gravity m/s^2 */
   const PetscReal rho_0   = 3300;                                /* Reference density kg/m^3 */
-  const PetscReal d_df    = 1e4;                                 /* Grain size in micrometers */
-  const PetscReal n_df    = 1.0;                                 /* Stress exponent */
-  const PetscReal n_ds    = 3.5;                                 /* Stress exponent */
-  const PetscReal C_OH    = 1000.0;                              /* OH concentration, H/10^6 Si */
+  const PetscReal d_df    = 1e4;                                 /* Grain size micrometers (mum) */
+  const PetscReal n_df    = 1.0;                                 /* Stress exponent, dimensionless */
+  const PetscReal n_ds    = 3.5;                                 /* Stress exponent, dimensionless */
+  const PetscReal C_OH    = 1000.0;                              /* OH concentration, H/10^6 Si, dimensionless */
   const PetscReal E_df    = 335.0;                               /* Activation energy, kJ/mol */
   const PetscReal E_ds    = 480.0;                               /* Activation energy, kJ/mol */
   const PetscReal V_df    = 4e-6;                                /* Activation volume, m^3/mol */
   const PetscReal V_ds    = 11e-6;                               /* Activation volume, m^3/mol */
-  const PetscReal P_l     = rho_0*x[2]*g;                        /* Lithostatic pressure kg km/m^2 s^2 */
-  const PetscReal T_surf  = 273.0;                               /* Surface temperature */
-  const PetscReal T_ad    = T_surf + 0.3*x[2];                   /* Adiabatic temperature */
-  const PetscReal eps_II  = SecondInvariantSymmetric(dim, u_x);  /* Second invariant of strain rate */
-  const PetscReal pre_df  = PetscPowReal(PetscPowRealInt(d_df, 3) / C_OH, 1.0/n_df);
-  const PetscReal pre_ds  = PetscPowReal(1.0 / (9e-20 * PetscPowReal(C_OH, 1.2)), 1.0/n_ds);
-  const PetscReal mid_df  = PetscPowReal(eps_II, (1.0 - n_df)/n_df);
-  const PetscReal mid_ds  = PetscPowReal(eps_II, (1.0 - n_ds)/n_ds);
-  const PetscReal post_df = PetscExpReal((E_df + P_l * V_df)/(n_df * R * (T + T_ad)));
-  const PetscReal post_ds = PetscExpReal((E_ds + P_l * V_ds)/(n_ds * R * (T + T_ad)));
-  const PetscReal nu_df   = pre_df * mid_df * post_df;
-  const PetscReal nu_ds   = pre_ds * mid_ds * post_ds;
-  const PetscReal nu      = nu_ds*nu_df/(nu_ds + nu_df);
+  const PetscReal beta    = 4.3e-12;                             /* Adiabatic compressibility, 1/Pa */
+  const PetscReal P_l     = (-1000./beta)*log(1.-rho_0*g*beta*(z/1000.)); /* Lithostatic pressure kPa = kJ/m^3 */
+  const PetscReal T_surf  = 273.0;                               /* Surface temperature, K */
+  const PetscReal T_ad    = T_surf + 0.3*z;                      /* Adiabatic temperature, K with gradient of 0.3 K/km */
+  const PetscReal eps_II  = SecondInvariantSymmetric(dim, u_x);  /* Second invariant of strain rate, 1/s */
+  const PetscReal A_df    = 1.0;                                 /* mum^3 / Pa^n s */
+  const PetscReal A_ds    = 9.0e-20;                             /* 1 / Pa^n s */
+  const PetscReal pre_df  = PetscPowReal(PetscPowRealInt(d_df, 3) / (A_df * C_OH), 1.0/n_df); /* Pa s^{1/n} */
+  const PetscReal pre_ds  = PetscPowReal(1.0 / (A_ds * PetscPowReal(C_OH, 1.2)), 1.0/n_ds);   /* Pa s^{1/n} */
+  const PetscReal mid_df  = PetscPowReal(eps_II, (1.0 - n_df)/n_df); /* s^{(n-1)/n} */
+  const PetscReal mid_ds  = PetscPowReal(eps_II, (1.0 - n_ds)/n_ds); /* s^{(n-1)/n} */
+  const PetscReal post_df = PetscExpReal((E_df + P_l * V_df)/(n_df * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
+  const PetscReal post_ds = PetscExpReal((E_ds + P_l * V_ds)/(n_ds * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
+  const PetscReal nu_df   = pre_df * mid_df * post_df;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
+  const PetscReal nu_ds   = pre_ds * mid_ds * post_ds;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
+  const PetscReal nu      = nu_ds*nu_df/(nu_ds + nu_df); /* Pa s = kg m/s */
 
   return nu;
 }
@@ -184,7 +212,8 @@ static void stokes_momentum_composite(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                       PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal nu = CompositeViscosity(dim, u_x, x, PetscRealPart(a[0]));
+  const PetscReal T  = 1400.0*PetscRealPart(a[0]) + 273.0;
+  const PetscReal nu = CompositeViscosity(dim, u_x, x, T);
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
