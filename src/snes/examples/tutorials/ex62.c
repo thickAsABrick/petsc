@@ -49,8 +49,6 @@ For tensor product meshes, see SNES ex67, ex72
 #include <petscsnes.h>
 #include <petscds.h>
 
-PetscInt spatialDim = 0;
-
 typedef enum {NEUMANN, DIRICHLET} BCType;
 typedef enum {RUN_FULL, RUN_TEST} RunType;
 
@@ -78,7 +76,7 @@ PetscErrorCode zero_scalar(PetscInt dim, PetscReal time, const PetscReal x[], Pe
 PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
   PetscInt d;
-  for (d = 0; d < spatialDim; ++d) u[d] = 0.0;
+  for (d = 0; d < dim; ++d) u[d] = 0.0;
   return 0;
 }
 
@@ -255,7 +253,6 @@ PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->runType = (RunType) run;
 
   ierr = PetscOptionsInt("-dim", "The topological mesh dimension", "ex62.c", options->dim, &options->dim, NULL);CHKERRQ(ierr);
-  spatialDim = options->dim;
   ierr = PetscOptionsBool("-interpolate", "Generate intermediate mesh elements", "ex62.c", options->interpolate, &options->interpolate, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-simplex", "Use simplices or tensor product cells", "ex62.c", options->simplex, &options->simplex, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-refinement_limit", "The largest allowable cell volume", "ex62.c", options->refinementLimit, &options->refinementLimit, NULL);CHKERRQ(ierr);
@@ -374,10 +371,15 @@ PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
+PetscErrorCode SetupProblem(DM dm, PetscDS prob, AppCtx *user)
 {
-  const PetscInt id = 1;
-  PetscErrorCode ierr;
+  DMLabel                 bdlabel;
+  const char             *bdname;
+  DMBoundaryConditionType bcType;
+  PetscInt                numBd;
+  const PetscInt         *ids;
+  IS                      valueIS;
+  PetscErrorCode          ierr;
 
   PetscFunctionBeginUser;
   ierr = PetscDSSetResidual(prob, 0, f0_u, f1_u);CHKERRQ(ierr);
@@ -397,7 +399,24 @@ PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   default:
     SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid dimension %d", user->dim);
   }
-  ierr = PetscDSAddBoundary(prob, user->bcType == DIRICHLET ? DM_BC_ESSENTIAL : DM_BC_NATURAL, "wall", user->bcType == NEUMANN ? "boundary" : "marker", 0, 0, NULL, (void (*)(void)) user->exactFuncs[0], 1, &id, user);CHKERRQ(ierr);
+  switch (user->bcType) {
+  case NEUMANN:
+    bdname = "boundary";
+    bcType = DM_BC_NATURAL;
+    break;
+  case DIRICHLET:
+    bdname = "marker";
+    bcType = DM_BC_ESSENTIAL;
+    break;
+  default: SETERRQ1(PetscObjectComm((PetscObject) prob), PETSC_ERR_ARG_WRONG, "Invalid boundary condition type: %D", (PetscInt) user->bcType);
+  }
+  ierr = DMGetLabel(dm, bdname, &bdlabel);CHKERRQ(ierr);
+  ierr = DMLabelGetValueIS(bdlabel, &valueIS);CHKERRQ(ierr);
+  ierr = ISGetLocalSize(valueIS, &numBd);CHKERRQ(ierr);
+  ierr = ISGetIndices(valueIS, &ids);CHKERRQ(ierr);
+  ierr = PetscDSAddBoundary(prob, bcType, "wall", bdname, 0, 0, NULL, (void (*)(void)) user->exactFuncs[0], numBd, ids, user);CHKERRQ(ierr);
+  ierr = ISRestoreIndices(valueIS, &ids);CHKERRQ(ierr);
+  ierr = ISDestroy(&valueIS);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -422,7 +441,7 @@ PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 0, (PetscObject) fe[0]);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 1, (PetscObject) fe[1]);CHKERRQ(ierr);
-  ierr = SetupProblem(prob, user);CHKERRQ(ierr);
+  ierr = SetupProblem(dm, prob, user);CHKERRQ(ierr);
   while (cdm) {
     ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
     ierr = DMGetCoarseDM(cdm, &cdm);CHKERRQ(ierr);
