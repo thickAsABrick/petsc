@@ -49,6 +49,7 @@ static void f0_trig_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   for (d = 0; d < dim; ++d) f0[0] += -4.0*PetscSqr(PETSC_PI)*PetscSinReal(2.0*PETSC_PI*x[d]);
 }
 
+/* This is the projection into our finite element space of the QoI functional */
 static void f0_unity_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
@@ -214,6 +215,24 @@ static PetscErrorCode SetupDiscretization(DM dm, const char name[], PetscErrorCo
   PetscFunctionReturn(0);
 }
 
+PetscErrorCode SNESCreateAdjoint(SNES snes, SNES *snesAdj, AppCtx *user)
+{
+  DM             dm, dmAdj;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = SNESGetDM(snes, &dm);CHKERRQ(ierr);
+
+  ierr = SNESCreate(PETSC_COMM_WORLD, &snesAdj);CHKERRQ(ierr);
+  ierr = PetscObjectSetOptionsPrefix((PetscObject) snesAdj, "adjoint_");CHKERRQ(ierr);
+  ierr = DMClone(dm, &dmAdj);CHKERRQ(ierr);
+  ierr = SNESSetDM(snesAdj, dmAdj);CHKERRQ(ierr);
+  ierr = SetupDiscretization(dmAdj, "adjoint", SetupAdjointProblem, user);CHKERRQ(ierr);
+  ierr = DMPlexSetSNESLocalFEM(dmAdj, user, user, user);CHKERRQ(ierr);
+  ierr = SNESSetFromOptions(snesAdj);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
 int main(int argc, char **argv)
 {
   DM             dm;   /* Problem specification */
@@ -239,27 +258,27 @@ int main(int argc, char **argv)
   ierr = VecViewFromOptions(u, NULL, "-potential_view");CHKERRQ(ierr);
   /* Adjoint system */
   if (user.adjoint) {
-    DM   dmAdj;
     SNES snesAdj;
+    DM   dmAdj;
     Vec  uAdj;
 
-    ierr = SNESCreate(PETSC_COMM_WORLD, &snesAdj);CHKERRQ(ierr);
-    ierr = PetscObjectSetOptionsPrefix((PetscObject) snesAdj, "adjoint_");CHKERRQ(ierr);
-    ierr = DMClone(dm, &dmAdj);CHKERRQ(ierr);
-    ierr = SNESSetDM(snesAdj, dmAdj);CHKERRQ(ierr);
-    ierr = SetupDiscretization(dmAdj, "adjoint", SetupAdjointProblem, &user);CHKERRQ(ierr);
+    ierr = SNESCreateAdjoint(snes, &snesAdj, &user);CHKERRQ(ierr);
+    ierr = SNESGetDM(snesAdj, &dmAdj);CHKERRQ(ierr);
     ierr = DMCreateGlobalVector(dmAdj, &uAdj);CHKERRQ(ierr);
     ierr = VecSet(uAdj, 0.0);CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) uAdj, "adjoint");CHKERRQ(ierr);
-    ierr = DMPlexSetSNESLocalFEM(dmAdj, &user, &user, &user);CHKERRQ(ierr);
-    ierr = SNESSetFromOptions(snesAdj);CHKERRQ(ierr);
+    /* Solve the adjoint system with QoI rhs */
     ierr = SNESSolve(snesAdj, NULL, uAdj);CHKERRQ(ierr);
     ierr = SNESGetSolution(snesAdj, &uAdj);CHKERRQ(ierr);
     ierr = VecViewFromOptions(uAdj, NULL, "-adjoint_view");CHKERRQ(ierr);
     /* Error representation */
     {
-      DM        dmErr, dmErrAux, dms[2];
-      Vec       errorEst, errorL2, uErr, uErrLoc, uAdjLoc, uAdjProj;
+      DM        dmErr;    /* Space for the error */
+      DM        dmErrAux; /* Direct sum of primal and error spaces */
+      Vec       errorEst; /* Adjoint error estimate */
+      Vec       errorL2;  /* True L2 error */
+      Vec       uAdjProj; /* \Pi_V u_{adj} */
+      Vec       uErr, uErrLoc;
       IS       *subis;
       PetscReal errorEstTot, errorL2Norm, errorL2Tot;
       PetscInt  N, i;
@@ -271,46 +290,59 @@ int main(int argc, char **argv)
       void            *ctxs[1] = {0};
 
       ctxs[0] = &user;
+      /*   Create dmErr: Holds objective function for error representation */
       ierr = DMClone(dm, &dmErr);CHKERRQ(ierr);
       ierr = SetupDiscretization(dmErr, "error", SetupErrorProblem, &user);CHKERRQ(ierr);
       ierr = DMGetGlobalVector(dmErr, &errorEst);CHKERRQ(ierr);
       ierr = DMGetGlobalVector(dmErr, &errorL2);CHKERRQ(ierr);
-      /*   Compute auxiliary data (solution and projection of adjoint solution) */
-      ierr = DMGetLocalVector(dmAdj, &uAdjLoc);CHKERRQ(ierr);
-      ierr = DMGlobalToLocalBegin(dmAdj, uAdj, INSERT_VALUES, uAdjLoc);CHKERRQ(ierr);
-      ierr = DMGlobalToLocalEnd(dmAdj, uAdj, INSERT_VALUES, uAdjLoc);CHKERRQ(ierr);
-      ierr = DMGetGlobalVector(dm, &uAdjProj);CHKERRQ(ierr);
-      ierr = PetscObjectCompose((PetscObject) dm, "dmAux", (PetscObject) dmAdj);CHKERRQ(ierr);
-      ierr = PetscObjectCompose((PetscObject) dm, "A", (PetscObject) uAdjLoc);CHKERRQ(ierr);
-      ierr = DMProjectField(dm, 0.0, u, identity, INSERT_VALUES, uAdjProj);CHKERRQ(ierr);
-      ierr = PetscObjectCompose((PetscObject) dm, "dmAux", NULL);CHKERRQ(ierr);
-      ierr = PetscObjectCompose((PetscObject) dm, "A", NULL);CHKERRQ(ierr);
-      ierr = DMRestoreLocalVector(dmAdj, &uAdjLoc);CHKERRQ(ierr);
-      /*   Attach auxiliary data */
-      dms[0] = dm; dms[1] = dm;
-      ierr = DMCreateSuperDM(dms, 2, &subis, &dmErrAux);CHKERRQ(ierr);
-      if (0) {
-        PetscSection sec;
+      /*   Compute uAdjProj: projection of adjoint solution into primal space */
+      {
+        Vec uAdjLoc;
 
-        ierr = DMGetDefaultSection(dms[0], &sec);CHKERRQ(ierr);
-        ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
-        ierr = DMGetDefaultSection(dms[1], &sec);CHKERRQ(ierr);
-        ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
-        ierr = DMGetDefaultSection(dmErrAux, &sec);CHKERRQ(ierr);
-        ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
+        ierr = DMGetLocalVector(dmAdj, &uAdjLoc);CHKERRQ(ierr);
+        ierr = DMGlobalToLocalBegin(dmAdj, uAdj, INSERT_VALUES, uAdjLoc);CHKERRQ(ierr);
+        ierr = DMGlobalToLocalEnd(dmAdj, uAdj, INSERT_VALUES, uAdjLoc);CHKERRQ(ierr);
+        ierr = DMGetGlobalVector(dm, &uAdjProj);CHKERRQ(ierr);
+        ierr = PetscObjectCompose((PetscObject) dm, "dmAux", (PetscObject) dmAdj);CHKERRQ(ierr);
+        ierr = PetscObjectCompose((PetscObject) dm, "A", (PetscObject) uAdjLoc);CHKERRQ(ierr);
+        ierr = DMProjectField(dm, 0.0, u, identity, INSERT_VALUES, uAdjProj);CHKERRQ(ierr);
+        ierr = PetscObjectCompose((PetscObject) dm, "dmAux", NULL);CHKERRQ(ierr);
+        ierr = PetscObjectCompose((PetscObject) dm, "A", NULL);CHKERRQ(ierr);
+        ierr = DMRestoreLocalVector(dmAdj, &uAdjLoc);CHKERRQ(ierr);
       }
-      ierr = DMViewFromOptions(dmErrAux, NULL, "-dm_err_view");CHKERRQ(ierr);
-      ierr = ISViewFromOptions(subis[0], NULL, "-super_is_view");CHKERRQ(ierr);
-      ierr = ISViewFromOptions(subis[1], NULL, "-super_is_view");CHKERRQ(ierr);
+      /*   Create dmErrAux: Direct sum of primal and err spaces */
+      {
+        DM dms[2];
+
+        dms[0] = dm; dms[1] = dm;
+        ierr = DMCreateSuperDM(dms, 2, &subis, &dmErrAux);CHKERRQ(ierr);
+        if (0) {
+          PetscSection sec;
+
+          ierr = DMGetDefaultSection(dms[0], &sec);CHKERRQ(ierr);
+          ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
+          ierr = DMGetDefaultSection(dms[1], &sec);CHKERRQ(ierr);
+          ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
+          ierr = DMGetDefaultSection(dmErrAux, &sec);CHKERRQ(ierr);
+          ierr = PetscSectionView(sec, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
+        }
+      }
+      /* Construct uErr: u \oplus uAdjProj */
       ierr = DMGetGlobalVector(dmErrAux, &uErr);CHKERRQ(ierr);
-      ierr = VecViewFromOptions(u, NULL, "-map_vec_view");CHKERRQ(ierr);
-      ierr = VecViewFromOptions(uAdjProj, NULL, "-map_vec_view");CHKERRQ(ierr);
-      ierr = VecViewFromOptions(uErr, NULL, "-map_vec_view");CHKERRQ(ierr);
       ierr = VecISCopy(uErr, subis[0], SCATTER_FORWARD, u);CHKERRQ(ierr);
       ierr = VecISCopy(uErr, subis[1], SCATTER_FORWARD, uAdjProj);CHKERRQ(ierr);
       ierr = DMRestoreGlobalVector(dm, &uAdjProj);CHKERRQ(ierr);
+      if (1) {
+        ierr = DMViewFromOptions(dmErrAux, NULL, "-dm_err_view");CHKERRQ(ierr);
+        ierr = ISViewFromOptions(subis[0], NULL, "-super_is_view");CHKERRQ(ierr);
+        ierr = ISViewFromOptions(subis[1], NULL, "-super_is_view");CHKERRQ(ierr);
+        ierr = VecViewFromOptions(u, NULL, "-map_vec_view");CHKERRQ(ierr);
+        ierr = VecViewFromOptions(uAdjProj, NULL, "-map_vec_view");CHKERRQ(ierr);
+        ierr = VecViewFromOptions(uErr, NULL, "-map_vec_view");CHKERRQ(ierr);
+      }
       for (i = 0; i < 2; ++i) {ierr = ISDestroy(&subis[i]);CHKERRQ(ierr);}
       ierr = PetscFree(subis);CHKERRQ(ierr);
+      /*  Construct uErrLoc and attach it as an aux field to dmErr */
       ierr = DMGetLocalVector(dmErrAux, &uErrLoc);CHKERRQ(ierr);
       ierr = DMGlobalToLocalBegin(dm, uErr, INSERT_VALUES, uErrLoc);CHKERRQ(ierr);
       ierr = DMGlobalToLocalEnd(dm, uErr, INSERT_VALUES, uErrLoc);CHKERRQ(ierr);
