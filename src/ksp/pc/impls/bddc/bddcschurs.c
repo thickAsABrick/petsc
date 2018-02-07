@@ -746,10 +746,10 @@ PetscErrorCode PCBDDCSubSchursSetUp(PCBDDCSubSchurs sub_schurs, Mat Ain, Mat Sin
         }
         ierr = ISGetSize(is_I,&n_internal);CHKERRQ(ierr);
         if (n_internal) { /* UMFPACK gives error with 0 sized problems */
-          MatSolverPackage solver=NULL;
-          ierr = PCFactorGetMatSolverPackage(origpc,(const MatSolverPackage*)&solver);CHKERRQ(ierr);
+          MatSolverType solver = NULL;
+          ierr = PCFactorGetMatSolverType(origpc,(MatSolverType*)&solver);CHKERRQ(ierr);
           if (solver) {
-            ierr = PCFactorSetMatSolverPackage(schurpc,solver);CHKERRQ(ierr);
+            ierr = PCFactorSetMatSolverType(schurpc,solver);CHKERRQ(ierr);
           }
         }
         ierr = KSPSetUp(schurksp);CHKERRQ(ierr);
@@ -918,7 +918,7 @@ PetscErrorCode PCBDDCSubSchursSetUp(PCBDDCSubSchurs sub_schurs, Mat Ain, Mat Sin
 #else
     ierr = PetscStrcpy(solver,MATSOLVERMKL_PARDISO);CHKERRQ(ierr);
 #endif
-    ierr = PetscOptionsGetString(NULL,((PetscObject)A)->prefix,"-mat_solver_package",solver,256,NULL);CHKERRQ(ierr);
+    ierr = PetscOptionsGetString(NULL,((PetscObject)A)->prefix,"-mat_solver_type",solver,256,NULL);CHKERRQ(ierr);
 
     /* when using the benign subspace trick, the local Schur complements are SPD */
     if (benign_trick) sub_schurs->is_posdef = PETSC_TRUE;
@@ -1013,7 +1013,16 @@ PetscErrorCode PCBDDCSubSchursSetUp(PCBDDCSubSchurs sub_schurs, Mat Ain, Mat Sin
           ierr = ISRestoreIndices(is_p_r[i],&idxs);CHKERRQ(ierr);
           ierr = VecDestroy(&benign_AIIm1_ones);CHKERRQ(ierr);
         }
-  /* restore defaults */
+        if (!S_lower_triangular) { /* I need to expand the upper triangular data (column oriented) */
+          PetscInt k,j;
+          for (k=0;k<size_schur;k++) {
+            for (j=k;j<size_schur;j++) {
+              S_data[j*size_schur+k] = PetscConj(S_data[k*size_schur+j]);
+            }
+          }
+        }
+
+        /* restore defaults */
 #if defined(PETSC_HAVE_MUMPS)
         ierr = MatMumpsSetIcntl(F,26,-1);CHKERRQ(ierr);
 #endif

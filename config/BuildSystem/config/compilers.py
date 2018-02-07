@@ -1570,15 +1570,19 @@ class Configure(config.base.Configure):
     """
     self.setCompilers.saveLog()
     self.setCompilers.pushLanguage('C')
+    restoredlog = 0
     flags_to_try = ['','-std=c99','-std=gnu99','-std=c11''-std=gnu11','-c99']
     for flag in flags_to_try:
       if self.setCompilers.checkCompilerFlag(flag, includes, body):
         self.c99flag = flag
+        self.logWrite(self.setCompilers.restoreLog())
+        restoredlog = 1
         self.framework.logPrint('Accepted C99 compile flag: '+flag)
         break
     if self.c99flag == '': self.addDefine('HAVE_C99', 1)
     self.setCompilers.popLanguage()
-    self.logWrite(self.setCompilers.restoreLog())
+    if not restoredlog:
+      self.logWrite(self.setCompilers.restoreLog())
     return
 
   def configure(self):
