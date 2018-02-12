@@ -2,13 +2,51 @@ static char help[] = "The variable-viscosity Stokes Problem in 2d with finite el
 We solve the Stokes problem in a square domain\n\
 and compare against exact solutions from Mirko Velic.\n\n\n";
 
-/*
-The variable-viscosity Stokes problem, which we discretize using the finite
-element method on an unstructured mesh. The weak form equations are
+/* Derivation of Stokes Equation:
 
-  < \nabla v, \nu(x) (\nabla u + {\nabla u}^T) > - < \nabla\cdot v, p > + < v, f > = 0
-  < q, \nabla\cdot u >                                                             = 0
+Start with time-independent momentum and mass balance:
+\begin{align*}
+  -\nabla \cdot \tau      &= \rho f \\
+   \nabla \cdot (\rho u)  &= 0
+\end{align*}
+where $\rho$ is the density, $u$ is the fluid velocity, $\tau$ is the Cauchy stress tensor, and $f$ is the body force
+(force density). We assume that the density is constant, and use the rate of strain tensor as the stress tensor for a
+Newtonian fluid
+\begin{align*}
+  -\nabla \cdot \frac{\mu}{2} (\nabla u + \nabla u^T) + \nabla p &= f \\
+   \rho \nabla \cdot u                                           &= 0
+\end{align*}
+where $\nu$ is the kinematic viscosity $\mu/\rho$ and has units $m^2/s$ since $\mu$ has units $Pa s = kg/(m s)$. The units
+for the equations are
+\begin{align*}
+  m^{-1} kg m^{-1} s^{-1} (m^{-1} m s^{-1}) + m^{-1} kg m^{-1} s^{-2} - kg m s^{-2} m^{-3} &= kg m^{-2} s^{-2} \\
+  kg m^{-3} m^{-1} m s^{-1}                                                                &= kg m^{-3} s^{-1}
+\end{align*}
+Now if we divide by the density, we have
+\begin{align*}
+  -\nabla \cdot \frac{\nu}{2} (\nabla u + \nabla u^T) + \frac{1}{\rho} \nabla p &= \frac{f}{\rho} \\
+   \nabla \cdot u                                                               &= 0
+\end{align*}
+with units $m s^{-2}$ and $s^{-1}$. To non-dimensionlize these equations, we need a timescale $T_0$, a length scale $L_0$,
+and a density. Thus we have
+\begin{align*}
+  -\nabla \cdot \frac{T^2_0}{2 \rho L_0} \mu (\nabla u + \nabla u^T) + \frac{T^2_0}{L_0\rho} \nabla p &= \frac{T^2_0}{L_0 \rho} f \\
+   T_0 \nabla \cdot u                                                                                 &= 0
+\end{align*}
+and we could also see it as using a momentum scale $\rho V_0$. The reference viscosity would be
+\begin{align*}
+  \mu_0 = \rho L^2_0 T^{-1}_0
+\end{align*}
 
+We expect U_0 = 10mm/yr = 1e-2m / 3e7s = 3e-10 m/s, whereas our factors gives us U_0 = 6e6 m/3e15 s = 2e-9 m/s.
+
+For bouyancy we have 10 m/s^2 * 1e3 K * 2e-5 K^{-1} = 2e-1 m/s^2
+
+We discretize the variable-viscosity Stokes problem using the finite element method on an unstructured mesh. The weak form equations are
+\begin{align*}
+  \frac{1}{V_0 \rho} \left( (\nabla v, \mu(x) (\nabla u + {\nabla u}^T)) - (\nabla\cdot v, p) + (v, f) \right) &= 0 \\
+  (q, T_0 \nabla\cdot u)                                                                                       &= 0
+\end{align*}
 Free slip conditions for velocity are enforced on every wall. The pressure is
 constrained to have zero integral over the domain.
 
@@ -16,8 +54,12 @@ To produce nice output, use
 
   -dm_refine 3 -show_error -dm_view hdf5:sol1.h5 -error_vec_view hdf5:sol1.h5::append -sol_vec_view hdf5:sol1.h5::append -exact_vec_view hdf5:sol1.h5::append
 
-Citcom:
+Citcom performance:
  1250 x 850 on 900 steps (3.5h per 100 timeteps)
+
+Citcom input:
+ 1249 x 481 vertices
+ Domain: x: 0 - 45deg z: 0 - 2500km
 
  *_vects.ascii
  Nx Ny Nz
@@ -42,8 +84,8 @@ Citcom:
 #include <petscds.h>
 #include <petscbag.h>
 
-typedef enum {SOLKX, SOLCX, COMPOSITE, NUM_SOL_TYPES} SolutionType;
-const char *solTypes[NUM_SOL_TYPES+1] = {"solkx", "solcx", "composite", "unknown"};
+typedef enum {SOLKX, SOLCX, COMPOSITE, ANALYTIC, NUM_SOL_TYPES} SolutionType;
+const char *solTypes[NUM_SOL_TYPES+1] = {"solkx", "solcx", "composite", "analytic", "unknown"};
 
 typedef struct {
   PetscInt  n, m;       /* x- and y-wavelengths for variation across the domain */
@@ -53,6 +95,7 @@ typedef struct {
   PetscReal etaA, etaB; /* Two viscosities for discontinuous change */
   PetscReal xc;         /* The location of viscosity jump */
   /* Composite viscosity */
+  PetscReal rho;        /* The temperature */
   PetscReal T;          /* The temperature */
 } Parameter;
 
@@ -173,12 +216,12 @@ static PetscReal SecondInvariantSymmetric(PetscInt dim, const PetscScalar u_x[])
 }
 
 /* Assumes that u_x[] is in 1/s, x[] is in km, T is in K */
-static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal T)
+static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal rho0, PetscReal T)
 {
-  const PetscReal z       = x[dim-1];                            /* ??? Depth, km DO I NEED TO INVERT? */
+  const PetscReal R_E     = 6371.137;                            /* Radius of the Earth in km */
+  const PetscReal z       = R_E*(1. - x[dim-1]);                 /* Depth, km */
   const PetscReal R       = 8.314459848e-3;                      /* Gas constant kJ/K mol */
   const PetscReal g       = 9.8;                                 /* Acceleration due to gravity m/s^2 */
-  const PetscReal rho_0   = 3300;                                /* Reference density kg/m^3 */
   const PetscReal d_df    = 1e4;                                 /* Grain size micrometers (mum) */
   const PetscReal n_df    = 1.0;                                 /* Stress exponent, dimensionless */
   const PetscReal n_ds    = 3.5;                                 /* Stress exponent, dimensionless */
@@ -188,7 +231,7 @@ static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const
   const PetscReal V_df    = 4e-6;                                /* Activation volume, m^3/mol */
   const PetscReal V_ds    = 11e-6;                               /* Activation volume, m^3/mol */
   const PetscReal beta    = 4.3e-12;                             /* Adiabatic compressibility, 1/Pa */
-  const PetscReal P_l     = (-1000./beta)*log(1.-rho_0*g*beta*(z/1000.)); /* Lithostatic pressure kPa = kJ/m^3 */
+  const PetscReal P_l     = (-1000./beta)*log(1.-rho0*g*beta*(z/1000.)); /* Lithostatic pressure kPa = kJ/m^3 */
   const PetscReal T_surf  = 273.0;                               /* Surface temperature, K */
   const PetscReal T_ad    = T_surf + 0.3*z;                      /* Adiabatic temperature, K with gradient of 0.3 K/km */
   const PetscReal eps_II  = SecondInvariantSymmetric(dim, u_x);  /* Second invariant of strain rate, 1/s */
@@ -197,14 +240,17 @@ static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const
   const PetscReal pre_df  = PetscPowReal(PetscPowRealInt(d_df, 3) / (A_df * C_OH), 1.0/n_df); /* Pa s^{1/n} */
   const PetscReal pre_ds  = PetscPowReal(1.0 / (A_ds * PetscPowReal(C_OH, 1.2)), 1.0/n_ds);   /* Pa s^{1/n} */
   const PetscReal mid_df  = PetscPowReal(eps_II, (1.0 - n_df)/n_df); /* s^{(n-1)/n} */
-  const PetscReal mid_ds  = PetscPowReal(eps_II, (1.0 - n_ds)/n_ds); /* s^{(n-1)/n} */
+  const PetscReal mid_ds  = eps_II <= 0.0 ? 1e15 : PetscPowReal(eps_II, (1.0 - n_ds)/n_ds); /* s^{(n-1)/n} */
   const PetscReal post_df = PetscExpReal((E_df + P_l * V_df)/(n_df * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
   const PetscReal post_ds = PetscExpReal((E_ds + P_l * V_ds)/(n_ds * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
   const PetscReal nu_df   = pre_df * mid_df * post_df;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
   const PetscReal nu_ds   = pre_ds * mid_ds * post_ds;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
-  const PetscReal nu      = nu_ds*nu_df/(nu_ds + nu_df); /* Pa s = kg m/s */
+  const PetscReal mu      = nu_ds*nu_df/(nu_ds + nu_df); /* Pa s = kg/(m s) */
 
-  return nu;
+  /* return mu; */
+  /* kg/(m s) = kg/m^3 m^2/s */
+  /* 1e19 kg/(m s) = 1e19 kg/(m s) 1 basalt/3300kg/m^3 * R^2_E/3e13 m^2 3e13 s/MY basalt R_E^2/MY = 3e15 basalt R_E^2/MY */
+  return 1.e19;
 }
 
 static void stokes_momentum_composite(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -212,15 +258,19 @@ static void stokes_momentum_composite(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                       PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal T  = 1400.0*PetscRealPart(a[0]) + 273.0;
-  const PetscReal nu = CompositeViscosity(dim, u_x, x, T);
+  const PetscReal rho0  = constants[0];
+  const PetscReal L0    = constants[1];
+  const PetscReal T0    = constants[2];
+  const PetscReal T     = PetscRealPart(a[0]);
+  const PetscReal mu    = CompositeViscosity(dim, u_x, x, rho0, T);
+  const PetscReal scale = T0*T0/rho0;
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
-      f1[c*dim+d] = nu * (u_x[c*dim+d] + u_x[d*dim+c]);
+      f1[c*dim+d] = mu*scale/(L0*L0) * (u_x[c*dim+d] + u_x[d*dim+c]);
     }
-    f1[c*dim+c] -= u[dim];
+    f1[c*dim+c] -= u[dim]*scale;
   }
 }
 
@@ -234,13 +284,42 @@ static void stokes_mass(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   for (d = 0; d < dim; ++d) f0[0] += u_x[d*dim+d];
 }
 
+static void stokes_mass_composite(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  const PetscReal T0 = constants[2];
+  PetscInt        d;
+
+  f0[0] = 0.0;
+  for (d = 0; d < dim; ++d) f0[0] += u_x[d*dim+d];
+  f0[0] *= T0;
+}
+
+static void f0_bouyancy(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                        PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+{
+  const PetscReal L0    = constants[1];
+  const PetscReal T0    = constants[2];
+  const PetscReal T     = PetscRealPart(a[0]);
+  const PetscReal scale = T0*T0/L0;
+  const PetscReal g     = 9.8;    /* Acceleration due to gravity m/s^2 */
+  const PetscReal alpha = 2.0e-5; /* Coefficient of thermal expansivity K^{-1} */
+
+  f1[0] = 0.0;
+  f1[1] = scale * alpha * g * (T - 1673.);
+}
+
 static void f1_zero(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   PetscInt d;
-  for (d = 0; d < dim; ++d) f1[d] = 0.0;
+  for (d = 0; d < dim*dim; ++d) f1[d] = 0.0;
 }
 
 /* < q, \nabla\cdot u >, J_{pu} */
@@ -301,13 +380,18 @@ static void stokes_momentum_vel_J_composite(PetscInt dim, PetscInt Nf, PetscInt 
                                      const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                      PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal nu  = CompositeViscosity(dim, u_x, x, PetscRealPart(a[0]));
+  const PetscReal rho0 = constants[0];
+  const PetscReal L0   = constants[1];
+  const PetscReal T0   = constants[2];
+  const PetscReal T    = PetscRealPart(a[0]);
+  const PetscReal mu   = CompositeViscosity(dim, u_x, x, rho0, T);
+  const PetscReal mu0  = rho0*L0*L0/(T0*T0);
   PetscInt        cI, d;
 
   for (cI = 0; cI < dim; ++cI) {
     for (d = 0; d < dim; ++d) {
-      g3[((cI*dim+cI)*dim+d)*dim+d] += nu; /*g3[cI, cI, d, d]*/
-      g3[((cI*dim+d)*dim+d)*dim+cI] += nu; /*g3[cI, d, d, cI]*/
+      g3[((cI*dim+cI)*dim+d)*dim+d] += mu/mu0; /*g3[cI, cI, d, d]*/
+      g3[((cI*dim+d)*dim+d)*dim+cI] += mu/mu0; /*g3[cI, d, d, cI]*/
     }
   }
 }
@@ -338,8 +422,14 @@ static void stokes_identity_J_composite(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
-  const PetscReal nu = CompositeViscosity(dim, u_x, x, PetscRealPart(a[0]));
-  g0[0] = 1.0/nu;
+  const PetscReal rho0 = constants[0];
+  const PetscReal L0   = constants[1];
+  const PetscReal T0   = constants[2];
+  const PetscReal T    = PetscRealPart(a[0]);
+  const PetscReal mu   = CompositeViscosity(dim, u_x, x, rho0, T);
+  const PetscReal mu0  = rho0*L0*L0/(T0*T0);
+
+  g0[0] = mu0/mu;
 }
 
 /*
@@ -3178,19 +3268,15 @@ static PetscErrorCode SolCxSolutionPressure(PetscInt dim, PetscReal time, const 
 
 static PetscErrorCode CompositeSolutionVelocity(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar v[], void *ctx)
 {
-  PetscErrorCode ierr;
-
   PetscFunctionBegin;
-  ierr = SolKxSolution(x, 1, 1, 1.0, v, NULL, NULL, NULL, NULL);CHKERRQ(ierr);
+  v[0] = v[1] = 0.0;
   PetscFunctionReturn(0);
 }
 
 static PetscErrorCode CompositeSolutionPressure(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar p[], void *ctx)
 {
-  PetscErrorCode ierr;
-
   PetscFunctionBegin;
-  ierr = SolKxSolution(x, 1, 1, 1.0, NULL, p, NULL, NULL, NULL);CHKERRQ(ierr);
+  p[0] = 0.0;
   PetscFunctionReturn(0);
 }
 
@@ -3251,6 +3337,7 @@ static PetscErrorCode SetUpParameters(AppCtx *user)
     ierr = PetscBagRegisterReal(bag, &p->xc,   0.5, "xc",   "x-coordinate of the viscosity jump");CHKERRQ(ierr);
     break;
   case COMPOSITE:
+  case ANALYTIC:
     ierr = PetscBagRegisterReal(bag, &p->T, 1.0, "T", "The mantle temperature");CHKERRQ(ierr);
     break;
   default:
@@ -3321,9 +3408,14 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
         theta = axes[perm[0]][vert[perm[0]]]*2.0*PETSC_PI/360;
         phi   = axes[perm[1]][vert[perm[1]]]*2.0*PETSC_PI/360;
         r     = axes[perm[2]][vert[perm[2]]];
-        coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
-        coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
-        if (dim > 2) {coords[off+2] = r*PetscCosReal(theta);}
+        if (dim > 2) {
+          coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
+          coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
+          coords[off+2] = r*PetscCosReal(theta);
+        } else {
+          coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
+          coords[off+1] = r; /*r*PetscSinReal(theta)*PetscCosReal(phi);*/
+        }
       }
       ierr = VecRestoreArray(coordinates, &coords);CHKERRQ(ierr);
     }
@@ -3451,8 +3543,19 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
     ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_cx, NULL, NULL, NULL);CHKERRQ(ierr);
     break;
   case COMPOSITE:
-    ierr = PetscDSSetResidual(prob, 0, f0_u, stokes_momentum_composite);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_composite);CHKERRQ(ierr);
+    ierr = PetscDSSetResidual(prob, 1, stokes_mass_composite, f1_zero);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_composite);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_composite);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_composite, NULL, NULL, NULL);CHKERRQ(ierr);
+    break;
+  case ANALYTIC:
+    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_composite);CHKERRQ(ierr);
+    ierr = PetscDSSetResidual(prob, 1, stokes_mass_composite, f1_zero);CHKERRQ(ierr);
     ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_composite);CHKERRQ(ierr);
     ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
     ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
@@ -3479,6 +3582,10 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
       user->exactFuncs[0] = CompositeSolutionVelocity;
       user->exactFuncs[1] = CompositeSolutionPressure;
       break;
+    case ANALYTIC:
+      user->exactFuncs[0] = AnalyticSolutionVelocity;
+      user->exactFuncs[1] = AnalyticSolutionPressure;
+      break;
     default:
       SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solTypes[PetscMin(user->solType, NUM_SOL_TYPES)]);
     }
@@ -3494,6 +3601,36 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallT", "markerTop",    0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, ctx);CHKERRQ(ierr);
   comp = 0;
   ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallL", "markerLeft",   0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, ctx);CHKERRQ(ierr);
+  /* Units */
+  switch (user->solType) {
+  case SOLKX:
+  case SOLCX:
+    break;
+  case COMPOSITE:
+  case ANALYTIC:
+  {
+#if 1
+    const PetscReal rho0 = 3300.;      /* Reference density kg/m^3 */
+    const PetscReal L0   = 6.371137e6; /* R_E:  Length m */
+    const PetscReal T0   = 3.e13;      /* 1 MY: Time scale s */
+#else
+    const PetscReal rho0 = 1.0/3300.;      /* Reference density kg/m^3 */
+    const PetscReal L0   = 1.0/6.371137e6; /* R_E:  Length m */
+    const PetscReal T0   = 1.0/3.e15;      /* 100 MY: Time scale s */
+#endif
+    PetscScalar     constants[3];
+
+    constants[0] = rho0;
+    constants[1] = L0;
+    constants[2] = T0;
+    ierr = PetscDSSetConstants(prob, 3, constants);CHKERRQ(ierr);
+    /* ierr = DMPlexSetScale(dm, PETSC_UNIT_LENGTH, L0);CHKERRQ(ierr);
+     ierr = DMPlexSetScale(dm, PETSC_UNIT_TIME,   T0);CHKERRQ(ierr); */
+  }
+  break;
+  default:
+    SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solTypes[PetscMin(user->solType, NUM_SOL_TYPES)]);
+  }
   PetscFunctionReturn(0);
 }
 
@@ -3536,7 +3673,7 @@ static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
           PetscInt off;
 
           ierr = PetscSectionGetOffset(s, (vz*Ny + vy)*Nx + vx + vStart, &off);CHKERRQ(ierr);
-          p[off] = temp[vz];
+          p[off] = 1400.0*temp[vz] + 273.0;
         }
       }
     }
@@ -3562,6 +3699,7 @@ static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
         a[4] = param->xc;
         break;
       case COMPOSITE:
+      case ANALYTIC:
         a[0] = param->T;
         break;
       default: SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_SUP, "No parameter information for solution type %d", user->solType);
@@ -3600,6 +3738,7 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   case SOLKX:     numAux = 3;break;
   case SOLCX:     numAux = 5;break;
   case COMPOSITE: numAux = 1;break;
+  case ANALYTIC:  numAux = 1;break;
   default: SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_SUP, "No parameter information for solution type %d", user->solType);
   }
   /* Create discretization of solution fields */
@@ -3672,17 +3811,14 @@ static PetscErrorCode CreatePressureNullSpace(DM dm, AppCtx *user, Vec *v, MatNu
   PetscErrorCode   ierr;
 
   PetscFunctionBeginUser;
-  ierr = DMGetGlobalVector(dm, &vec);CHKERRQ(ierr);
+  ierr = DMCreateGlobalVector(dm, &vec);CHKERRQ(ierr);
   ierr = DMProjectFunction(dm, 0.0, funcs, NULL, INSERT_ALL_VALUES, vec);CHKERRQ(ierr);
   ierr = VecNormalize(vec, NULL);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) vec, "Pressure Null Space");CHKERRQ(ierr);
   ierr = VecViewFromOptions(vec, NULL, "-null_space_vec_view");CHKERRQ(ierr);
   ierr = MatNullSpaceCreate(PetscObjectComm((PetscObject) dm), PETSC_FALSE, 1, &vec, nullSpace);CHKERRQ(ierr);
-  if (v) {
-    ierr = DMCreateGlobalVector(dm, v);CHKERRQ(ierr);
-    ierr = VecCopy(vec, *v);CHKERRQ(ierr);
-  }
-  ierr = DMRestoreGlobalVector(dm, &vec);CHKERRQ(ierr);
+  if (v) {*v = vec;}
+  else   {ierr = VecDestroy(&vec);CHKERRQ(ierr);}
   PetscFunctionReturn(0);
 }
 
@@ -3847,13 +3983,16 @@ int main(int argc, char **argv)
     args: -dm_plex_separate_marker -simplex 0 -dm_refine 2 -vel_petscspace_order 2 -pres_petscspace_order 1 -pres_petscspace_poly_tensor 0 -pres_petscdualspace_lagrange_continuity 0 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_ksp_rtol 1e-10 -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view
   # 2D serial mantle tests
   test:
+    suffix: mantle_small_q1p0
+    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor -ksp_converged_reason -fieldsplit_velocity_ksp_monitor -fieldsplit_velocity_ksp_converged_reason -fieldsplit_velocity_ksp_view_pmat -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -fieldsplit_pressure_ksp_view_pmat
+  test:
     suffix: mantle_q1p0
     requires: broken
     filter: sed  -e "s/SNES iterations *= *[123]/SNES iterations=4/g" -e "s/solver iterations *= *[123]/solver iterations=4/g" -e "s/evaluations=2/evaluations=3/g"
     args: -sol_type composite -simplex 0 -mantle_basename $HOME/Desktop/TwoDim_forMatt/TwoDimSlab45cg1deg -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view
   test:
     suffix: mantle_q2q1
-    requires: broken
+    requires:
     filter: sed  -e "s/SNES iterations *= *[123]/SNES iterations=4/g" -e "s/solver iterations *= *[123]/solver iterations=4/g" -e "s/evaluations=2/evaluations=3/g"
     args: -sol_type composite -simplex 0 -mantle_basename $HOME/Desktop/TwoDim_forMatt/TwoDimSlab45cg1deg -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view
 
