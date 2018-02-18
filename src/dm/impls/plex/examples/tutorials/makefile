@@ -20,6 +20,7 @@ ex1f90: ex1f90.o  chkopts
 
 ex2: ex2.o  chkopts
 	-${CLINKER} -o ex2 ex2.o ${PETSC_DM_LIB}
+	${DSYMUTIL} ex2
 	${RM} -f ex2.o
 
 ex5: ex5.o  chkopts
