@@ -1514,39 +1514,18 @@ PetscErrorCode PCBDDCComputeNoNetFlux(Mat A, Mat divudotp, PetscBool transpose, 
   Mat                    loc_divudotp;
   Vec                    p,v,vins,quad_vec,*quad_vecs;
   ISLocalToGlobalMapping map;
-  IS                     *faces,*edges;
   PetscScalar            *vals;
   const PetscScalar      *array;
-  PetscInt               i,maxneighs,lmaxneighs,maxsize,nf,ne;
+  PetscInt               i,maxneighs,maxsize;
+  PetscInt               n_neigh,*neigh,*n_shared,**shared;
   PetscMPIInt            rank;
   PetscErrorCode         ierr;
 
   PetscFunctionBegin;
-  ierr = PCBDDCGraphGetCandidatesIS(graph,&nf,&faces,&ne,&edges,NULL);CHKERRQ(ierr);
-  if (graph->twodim) {
-    lmaxneighs = 2;
-  } else {
-    lmaxneighs = 1;
-    for (i=0;i<ne;i++) {
-      const PetscInt *idxs;
-      ierr = ISGetIndices(edges[i],&idxs);CHKERRQ(ierr);
-      lmaxneighs = PetscMax(lmaxneighs,graph->count[idxs[0]]);
-      ierr = ISRestoreIndices(edges[i],&idxs);CHKERRQ(ierr);
-    }
-    lmaxneighs++; /* graph count does not include self */
-  }
-  ierr = MPIU_Allreduce(&lmaxneighs,&maxneighs,1,MPIU_INT,MPI_MAX,PetscObjectComm((PetscObject)A));CHKERRQ(ierr);
+  ierr = ISLocalToGlobalMappingGetInfo(graph->l2gmap,&n_neigh,&neigh,&n_shared,&shared);CHKERRQ(ierr);
+  ierr = MPIU_Allreduce(&n_neigh,&maxneighs,1,MPIU_INT,MPI_MAX,PetscObjectComm((PetscObject)A));CHKERRQ(ierr);
   maxsize = 0;
-  for (i=0;i<ne;i++) {
-    PetscInt nn;
-    ierr = ISGetLocalSize(edges[i],&nn);CHKERRQ(ierr);
-    maxsize = PetscMax(maxsize,nn);
-  }
-  for (i=0;i<nf;i++) {
-    PetscInt nn;
-    ierr = ISGetLocalSize(faces[i],&nn);CHKERRQ(ierr);
-    maxsize = PetscMax(maxsize,nn);
-  }
+  for (i=0;i<n_neigh;i++) maxsize = PetscMax(n_shared[i],maxsize);
   ierr = PetscMalloc1(maxsize,&vals);CHKERRQ(ierr);
   /* create vectors to hold quadrature weights */
   ierr = MatCreateVecs(A,&quad_vec,NULL);CHKERRQ(ierr);
@@ -1594,31 +1573,18 @@ PetscErrorCode PCBDDCComputeNoNetFlux(Mat A, Mat divudotp, PetscBool transpose, 
 
   /* insert in global quadrature vecs */
   ierr = MPI_Comm_rank(PetscObjectComm((PetscObject)A),&rank);CHKERRQ(ierr);
-  for (i=0;i<nf;i++) {
+  for (i=0;i<n_neigh;i++) {
     const PetscInt    *idxs;
     PetscInt          idx,nn,j;
 
-    ierr = ISGetIndices(faces[i],&idxs);CHKERRQ(ierr);
-    ierr = ISGetLocalSize(faces[i],&nn);CHKERRQ(ierr);
+    idxs = shared[i];
+    nn   = n_shared[i];
     for (j=0;j<nn;j++) vals[j] = array[idxs[j]];
     ierr = PetscFindInt(rank,graph->count[idxs[0]],graph->neighbours_set[idxs[0]],&idx);CHKERRQ(ierr);
     idx  = -(idx+1);
     ierr = VecSetValuesLocal(quad_vecs[idx],nn,idxs,vals,INSERT_VALUES);CHKERRQ(ierr);
-    ierr = ISRestoreIndices(faces[i],&idxs);CHKERRQ(ierr);
   }
-  for (i=0;i<ne;i++) {
-    const PetscInt    *idxs;
-    PetscInt          idx,nn,j;
-
-    ierr = ISGetIndices(edges[i],&idxs);CHKERRQ(ierr);
-    ierr = ISGetLocalSize(edges[i],&nn);CHKERRQ(ierr);
-    for (j=0;j<nn;j++) vals[j] = array[idxs[j]];
-    ierr = PetscFindInt(rank,graph->count[idxs[0]],graph->neighbours_set[idxs[0]],&idx);CHKERRQ(ierr);
-    idx  = -(idx+1);
-    ierr = VecSetValuesLocal(quad_vecs[idx],nn,idxs,vals,INSERT_VALUES);CHKERRQ(ierr);
-    ierr = ISRestoreIndices(edges[i],&idxs);CHKERRQ(ierr);
-  }
-  ierr = PCBDDCGraphRestoreCandidatesIS(graph,&nf,&faces,&ne,&edges,NULL);CHKERRQ(ierr);
+  ierr = ISLocalToGlobalMappingRestoreInfo(graph->l2gmap,&n_neigh,&neigh,&n_shared,&shared);CHKERRQ(ierr);
   ierr = VecRestoreArrayRead(vins,&array);CHKERRQ(ierr);
   if (vl2l) {
     ierr = VecDestroy(&vins);CHKERRQ(ierr);
@@ -5790,7 +5756,7 @@ PetscErrorCode PCBDDCConstraintsSetUp(PC pc)
         /* check if array is null on the connected component */
         ierr = PetscBLASIntCast(size_of_constraint,&Blas_N);CHKERRQ(ierr);
         PetscStackCallBLAS("BLASasum",real_value = BLASasum_(&Blas_N,ptr_to_data,&Blas_one));
-        if (real_value > 0.0) { /* keep indices and values */
+        if (real_value > PETSC_SMALL*size_of_constraint) { /* keep indices and values */
           temp_constraints++;
           total_counts++;
           if (!idxs_copied) {
@@ -5811,7 +5777,7 @@ PetscErrorCode PCBDDCConstraintsSetUp(PC pc)
           norm = 1.0/PetscSqrtReal(PetscRealPart(norm));
           PetscStackCallBLAS("BLASscal",BLASscal_(&Blas_N,&norm,ptr_to_data,&Blas_one));
         } else { /* perform SVD */
-          PetscReal   tol = 1.0e-8; /* tolerance for retaining eigenmodes */
+          PetscReal   tol = PetscSqrtReal(PETSC_SMALL); /* tolerance for retaining eigenmodes */
           PetscScalar *ptr_to_data = &constraints_data[constraints_data_ptr[total_counts_cc]];
 
 #if defined(PETSC_MISSING_LAPACK_GESVD)
@@ -6642,6 +6608,7 @@ PetscErrorCode PCBDDCConstraintsSetUp(PC pc)
   }
   PetscFunctionReturn(0);
 }
+/* #undef PETSC_MISSING_LAPACK_GESVD */
 
 PetscErrorCode PCBDDCAnalyzeInterface(PC pc)
 {
