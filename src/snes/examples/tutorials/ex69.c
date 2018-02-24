@@ -14,17 +14,13 @@ To produce nice output, use
 
   -dm_refine 3 -show_error -dm_view hdf5:sol1.h5 -error_vec_view hdf5:sol1.h5::append -sol_vec_view hdf5:sol1.h5::append -exact_vec_view hdf5:sol1.h5::append
 
-and the auxiliary variables can be viewed using
-
-  -dm_aux_view hdf5:temp.h5 -vec_param_view hdf5:temp.h5::append
-
 Testing the solver:
 
-./ex69 -sol_type solkx -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_velocity_ksp_monitor_no -fieldsplit_velocity_ksp_converged_reason_no -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -ksp_rtol 1e-8 -fieldsplit_pressure_ksp_rtol 1e-3 -fieldsplit_pressure_pc_type lu -snes_max_it 1 -snes_error_if_not_converged 0 -snes_view -petscds_jac_pre 1
+./ex69 -sol_type solkx -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_velocity_ksp_monitor_no -fieldsplit_velocity_ksp_converged_reason_no -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -ksp_rtol 1e-8 -fieldsplit_pressure_ksp_rtol 1e-3 -fieldsplit_pressure_pc_type lu -snes_max_it 1 -snes_error_if_not_converged 0 -snes_view -petscds_jac_pre 1
 
 Testing the Jacobian:
 
-./ex69  -sol_type solkx -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor -ksp_converged_reason -fieldsplit_velocity_ksp_monitor -fieldsplit_velocity_ksp_converged_reason -fieldsplit_velocity_ksp_view_pmat -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -fieldsplit_pressure_ksp_view_pmat -snes_type test -petscds_jac_pre 0 -snes_test_display 1
+./ex69  -sol_type solkx -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor -ksp_converged_reason -fieldsplit_velocity_ksp_monitor -fieldsplit_velocity_ksp_converged_reason -fieldsplit_velocity_ksp_view_pmat -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -fieldsplit_pressure_ksp_view_pmat -snes_type test -petscds_jac_pre 0 -snes_test_display 1
 
 */
 
@@ -83,7 +79,7 @@ static void f0_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
   f0[0] = 0.0;
-  f0[1] = -PetscSinScalar(a[1]*PETSC_PI*x[1])*PetscCosScalar(a[0]*PETSC_PI*x[0]);
+  f0[1] = -PetscSinScalar(constants[1]*PETSC_PI*x[1])*PetscCosScalar(constants[0]*PETSC_PI*x[0]);
 }
 
 static void stokes_momentum_kx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -91,7 +87,7 @@ static void stokes_momentum_kx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu = PetscExpReal(2.0*PetscRealPart(a[2])*x[0]);
+  const PetscReal mu = PetscExpReal(2.0*PetscRealPart(constants[2])*x[0]);
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
@@ -107,7 +103,7 @@ static void stokes_momentum_cx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu = x[0] < PetscRealPart(a[4]) ? PetscRealPart(a[2]) : PetscRealPart(a[3]);
+  const PetscReal mu = x[0] < PetscRealPart(constants[4]) ? PetscRealPart(constants[2]) : PetscRealPart(constants[3]);
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
@@ -165,7 +161,7 @@ static void stokes_momentum_vel_J_kx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                      const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                      PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu  = PetscExpReal(2.0*PetscRealPart(a[2])*x[0]);
+  const PetscReal mu  = PetscExpReal(2.0*PetscRealPart(constants[2])*x[0]);
   PetscInt        cI, d;
 
   for (cI = 0; cI < dim; ++cI) {
@@ -180,7 +176,7 @@ static void stokes_momentum_vel_J_cx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                      const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                      PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu = x[0] < PetscRealPart(a[4]) ? PetscRealPart(a[2]) : PetscRealPart(a[3]);
+  const PetscReal mu = x[0] < PetscRealPart(constants[4]) ? PetscRealPart(constants[2]) : PetscRealPart(constants[3]);
   PetscInt        cI, d;
 
   for (cI = 0; cI < dim; ++cI) {
@@ -197,7 +193,7 @@ static void stokes_identity_J_kx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                  PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
-  const PetscReal mu = PetscExpReal(2.0*PetscRealPart(a[2])*x[0]);
+  const PetscReal mu = PetscExpReal(2.0*PetscRealPart(constants[2])*x[0]);
   g0[0] = 1.0/mu;
 }
 static void stokes_identity_J_cx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -205,7 +201,7 @@ static void stokes_identity_J_cx(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                  PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
-  const PetscReal mu = x[0] < PetscRealPart(a[4]) ? PetscRealPart(a[2]) : PetscRealPart(a[3]);
+  const PetscReal mu = x[0] < PetscRealPart(constants[4]) ? PetscRealPart(constants[2]) : PetscRealPart(constants[3]);
   g0[0] = 1.0/mu;
 }
 
@@ -3166,7 +3162,6 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
-  ierr = PetscBagGetData(user->bag, (void **) &ctx);CHKERRQ(ierr);
   switch (user->solType) {
   case SOLKX:
     ierr = PetscDSSetResidual(prob, 0, f0_u, stokes_momentum_kx);CHKERRQ(ierr);
@@ -3211,6 +3206,39 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   default:
     SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid dimension %D", user->dim);
   }
+  /* Setup constants */
+  {
+    Parameter *param;
+
+    ierr = PetscBagGetData(user->bag, (void **) &param);CHKERRQ(ierr);
+    switch (user->solType) {
+    case SOLKX:
+    {
+      PetscScalar constants[3];
+
+      constants[0] = param->m;
+      constants[1] = param->n;
+      constants[2] = param->B;
+      ierr = PetscDSSetConstants(prob, 3, constants);CHKERRQ(ierr);
+    }
+    break;
+    case SOLCX:
+    {
+      PetscScalar constants[5];
+
+      constants[0] = param->m;
+      constants[1] = param->n;
+      constants[2] = param->etaA;
+      constants[3] = param->etaB;
+      constants[4] = param->xc;
+      ierr = PetscDSSetConstants(prob, 5, constants);CHKERRQ(ierr);
+    }
+    break;
+    default: SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_SUP, "No parameter information for solution type %d", user->solType);
+    }
+  }
+  /* Setup Boundary Conditions */
+  ierr = PetscBagGetData(user->bag, (void **) &ctx);CHKERRQ(ierr);
   comp = 1;
   ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallB", "markerBottom", 0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, ctx);CHKERRQ(ierr);
   comp = 0;
@@ -3223,76 +3251,16 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
-/*---------------------------------------------------------------------*/
-{
-  Vec            paramVec;
-  Parameter     *param;
-  PetscScalar   *p, *a;
-  PetscInt       cStart, cEnd, cEndInterior, c;
-  PetscErrorCode ierr;
-
-  PetscFunctionBeginUser;
-  ierr = DMPlexGetHeightStratum(dmAux, 0, &cStart, &cEnd);CHKERRQ(ierr);
-  ierr = DMPlexGetHybridBounds(dm, &cEndInterior, NULL, NULL, NULL);CHKERRQ(ierr);
-  cEnd = cEndInterior < 0 ? cEnd : cEndInterior;
-  ierr = PetscBagGetData(user->bag, (void **) &param);CHKERRQ(ierr);
-  ierr = DMCreateLocalVector(dmAux, &paramVec);CHKERRQ(ierr);
-  ierr = VecGetArray(paramVec, &p);CHKERRQ(ierr);
-  switch (user->solType) {
-  case SOLKX:
-    for (c = cStart; c < cEnd; ++c) {
-      ierr = DMPlexPointLocalRef(dmAux, c, p, &a);CHKERRQ(ierr);
-      a[0] = param->m;
-      a[1] = param->n;
-      a[2] = param->B;
-    }
-    break;
-  case SOLCX:
-    for (c = cStart; c < cEnd; ++c) {
-      ierr = DMPlexPointLocalRef(dmAux, c, p, &a);CHKERRQ(ierr);
-      a[0] = param->m;
-      a[1] = param->n;
-      a[2] = param->etaA;
-      a[3] = param->etaB;
-      a[4] = param->xc;
-    }
-    break;
-  default: SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_SUP, "No parameter information for solution type %d", user->solType);
-  }
-  ierr = VecRestoreArray(paramVec, &p);CHKERRQ(ierr);
-  ierr = PetscObjectCompose((PetscObject) dm, "A", (PetscObject) paramVec);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(dmAux, NULL, "-dm_aux_view");CHKERRQ(ierr);
-  {
-    Vec gvec;
-
-    ierr = DMGetGlobalVector(dmAux, &gvec);CHKERRQ(ierr);
-    ierr = DMLocalToGlobalBegin(dmAux, paramVec, INSERT_VALUES, gvec);CHKERRQ(ierr);
-    ierr = DMLocalToGlobalEnd(dmAux, paramVec, INSERT_VALUES, gvec);CHKERRQ(ierr);
-    ierr = VecViewFromOptions(gvec, NULL, "-vec_param_view");CHKERRQ(ierr);
-    ierr = DMRestoreGlobalVector(dmAux, &gvec);CHKERRQ(ierr);
-  }
-  ierr = VecDestroy(&paramVec);CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
 static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 {
   DM              cdm = dm;
   const PetscInt  dim = user->dim;
-  PetscFE         fe[2], *feAux;
+  PetscFE         fe[2];
   PetscQuadrature q;
-  PetscDS         prob, probAux = NULL;
-  PetscInt        numAux, f;
-  const char     *auxFieldNames[5];
+  PetscDS         prob;
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
-  switch (user->solType) {
-  case SOLKX: numAux = 3;break;
-  case SOLCX: numAux = 5;break;
-  default: SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_SUP, "No parameter information for solution type %d", user->solType);
-  }
   /* Create discretization of solution fields */
   ierr = PetscFECreateDefault(dm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[0], "velocity");CHKERRQ(ierr);
@@ -3300,42 +3268,17 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
-  /* Create discretization of auxiliary fields */
-  ierr = PetscMalloc1(numAux, &feAux);CHKERRQ(ierr);
-  ierr = PetscBagGetNames(user->bag, auxFieldNames);CHKERRQ(ierr);
-  ierr = PetscDSCreate(PetscObjectComm((PetscObject)dm),&probAux);CHKERRQ(ierr);
-  for (f = 0; f < numAux; ++f) {
-    char prefix[PETSC_MAX_PATH_LEN];
-
-    ierr = PetscSNPrintf(prefix, PETSC_MAX_PATH_LEN, "aux_%d_", f);CHKERRQ(ierr);
-    ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, prefix, 0, &feAux[f]);CHKERRQ(ierr);
-    ierr = PetscObjectSetName((PetscObject) feAux[f], auxFieldNames[f]);CHKERRQ(ierr);
-    ierr = PetscFESetQuadrature(feAux[f], q);CHKERRQ(ierr);
-    ierr = PetscDSSetDiscretization(probAux, f, (PetscObject) feAux[f]);CHKERRQ(ierr);
-  }
   /* Set discretization and boundary conditions for each mesh */
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 0, (PetscObject) fe[0]);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 1, (PetscObject) fe[1]);CHKERRQ(ierr);
   ierr = SetupProblem(prob, user);CHKERRQ(ierr);
   while (cdm) {
-    DM      dmAux;
-
     ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
-    ierr = DMClone(cdm, &dmAux);CHKERRQ(ierr);
-    ierr = DMPlexCopyCoordinates(cdm, dmAux);CHKERRQ(ierr);
-    ierr = DMSetDS(dmAux, probAux);CHKERRQ(ierr);
-    ierr = PetscObjectCompose((PetscObject) cdm, "dmAux", (PetscObject) dmAux);CHKERRQ(ierr);
-    ierr = SetupMaterial(cdm, dmAux, user);CHKERRQ(ierr);
-    ierr = DMDestroy(&dmAux);CHKERRQ(ierr);
-
     ierr = DMGetCoarseDM(cdm, &cdm);CHKERRQ(ierr);
   }
   ierr = PetscFEDestroy(&fe[0]);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&fe[1]);CHKERRQ(ierr);
-  for (f = 0; f < numAux; ++f) {ierr = PetscFEDestroy(&feAux[f]);CHKERRQ(ierr);}
-  ierr = PetscDSDestroy(&probAux);CHKERRQ(ierr);
-  ierr = PetscFree(feAux);CHKERRQ(ierr);
   {
     PetscObject  pressure;
     MatNullSpace nullSpacePres;
