@@ -218,7 +218,7 @@ ex61view: ex61view.o  chkopts
 	${RM} ex61view.o
 ex62: ex62.o  chkopts
 	-${CLINKER} -o ex62 ex62.o ${PETSC_SNES_LIB}
-	${DSYMUTIL} ex69
+	${DSYMUTIL} ex62
 	${RM} ex62.o
 ex63: ex63.o  chkopts
 	-${CLINKER} -o ex63 ex63.o ${PETSC_SNES_LIB}
@@ -245,6 +245,10 @@ ex77: ex77.o  chkopts
 ex78: ex78.o  chkopts
 	-${CLINKER} -o ex78 ex78.o ${PETSC_SNES_LIB}
 	${RM} ex78.o
+ex79: ex79.o  chkopts
+	-${CLINKER} -o ex79 ex79.o ${PETSC_SNES_LIB}
+	${DSYMUTIL} ex79
+	${RM} ex79.o
 #-------------------------------------------------------------------------
 
 #  these tests are used by the makefile in PETSC_DIR for basic tests of the install and should not be removed
