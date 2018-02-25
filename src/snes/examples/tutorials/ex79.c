@@ -249,8 +249,8 @@ static PetscReal DiffusionCreepViscosity(PetscInt dim, const PetscScalar u_x[], 
 
   MantleViscosity(dim, u_x, x, kappa, R_E, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_df;
-  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g\n", mu, mu_min);
-  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g\n", mu, mu_max);
+  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
+  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
   return PetscMin(mu_max, PetscMax(mu_min, mu));
 }
 
@@ -267,9 +267,9 @@ static PetscReal DislocationCreepViscosity(PetscInt dim, const PetscScalar u_x[]
 
   MantleViscosity(dim, u_x, x, kappa, R_E, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_ds;
-  if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: %g, %g\n", x[0], x[1]);
-  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g\n", mu, mu_min);
-  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g\n", mu, mu_max);
+  if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
+  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
+  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
   return PetscMin(mu_max, PetscMax(mu_min, mu));
 }
 
@@ -286,11 +286,9 @@ static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const
 
   MantleViscosity(dim, u_x, x, kappa, R_E, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
   mu = 2.0*mu_ds*mu_df/(mu_ds + mu_df);
-  if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: %g, %g\n", x[0], x[1]);
-#if 1
-  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (mu_df %g, mu_ds %g)\n", mu, mu_min, mu_df, mu_ds);
-  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (mu_df %g, mu_ds %g)\n", mu, mu_max, mu_df, mu_ds);
-#endif
+  if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
+  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
+  if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
   return PetscMin(mu_max, PetscMax(mu_min, mu));
 }
 
