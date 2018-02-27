@@ -47,6 +47,7 @@ Citcom input:
 #include <petscdmplex.h>
 #include <petscsnes.h>
 #include <petscds.h>
+#include <petscsf.h>
 #include <petscbag.h>
 
 typedef enum {CONSTANT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NONE, NUM_SOL_TYPES} SolutionType;
@@ -62,6 +63,9 @@ typedef struct {
   char          mantleBasename[PETSC_MAX_PATH_LEN];
   int           verts[3];          /* The number of vertices in each dimension for mantle problems */
   int           perm[3] ;          /* The permutation of axes for mantle problems */
+  /* Parallel temperature input */
+  Vec           T;                 /* The non-dimensional temperature field */
+  PetscSF       pointSF;           /* The SF describing mesh distribution */
   /* Problem definition */
   SolutionType  preType;           /* The type of problem for the presolve */
   SolutionType  solType;           /* The type of problem */
@@ -969,6 +973,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->preType         = NONE;
   options->solType         = CONSTANT;
   options->mantleBasename[0] = '\0';
+  options->pointSF         = NULL;
 
   ierr = PetscOptionsBegin(comm, "", "Variable-Viscosity Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
   ierr = PetscOptionsInt("-debug", "The debugging level", "ex69.c", options->debug, &options->debug, NULL);CHKERRQ(ierr);
@@ -987,30 +992,145 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   PetscFunctionReturn(0);
 }
 
+static PetscErrorCode CreateTemperatureVector(DM dm, Vec *T, AppCtx *user)
+{
+  DM              tdm;
+  PetscFE         tfe, vfe;
+  PetscDS         tprob, prob;
+  PetscSpace      sp;
+  PetscQuadrature q;
+  PetscInt        dim, order;
+  PetscErrorCode  ierr;
+
+  PetscFunctionBeginUser;
+  ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
+  ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
+  /* Need to match velocity quadrature */
+  ierr = PetscFECreateDefault(dm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &vfe);CHKERRQ(ierr);
+  ierr = PetscFEGetQuadrature(vfe, &q);CHKERRQ(ierr);
+
+  ierr = DMClone(dm, &tdm);CHKERRQ(ierr);
+  ierr = DMPlexCopyCoordinates(dm, tdm);CHKERRQ(ierr);
+  ierr = DMGetDS(tdm, &tprob);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "temp_", PETSC_DEFAULT, &tfe);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) tfe, "temperature");CHKERRQ(ierr);
+  ierr = PetscFESetQuadrature(tfe, q);CHKERRQ(ierr);
+  ierr = PetscDSSetDiscretization(tprob, 0, (PetscObject) tfe);CHKERRQ(ierr);
+  ierr = PetscFEGetBasisSpace(tfe, &sp);CHKERRQ(ierr);
+  ierr = PetscSpaceGetOrder(sp, &order);CHKERRQ(ierr);
+  if (order != 1) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Temperature element must be linear, not order %D", order);
+  ierr = PetscDSSetFromOptions(tprob);CHKERRQ(ierr);
+  ierr = PetscFEDestroy(&tfe);CHKERRQ(ierr);
+  ierr = PetscFEDestroy(&vfe);CHKERRQ(ierr);
+  ierr = DMCreateLocalVector(tdm, T);CHKERRQ(ierr);
+  ierr = PetscObjectCompose((PetscObject) dm, "dmAux", (PetscObject) tdm);CHKERRQ(ierr);
+  ierr = PetscObjectCompose((PetscObject) dm, "A",     (PetscObject) *T);CHKERRQ(ierr);
+  ierr = DMDestroy(&tdm);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode CreateInitialTemperature(DM dm, Vec *Ts, AppCtx *user)
+{
+  DM             tdm;
+  PetscSection   tsec;
+  PetscViewer    viewer;
+  PetscScalar   *T;
+  PetscMPIInt    rank;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = MPI_Comm_rank(PetscObjectComm((PetscObject) dm), &rank);CHKERRQ(ierr);
+  ierr = CreateTemperatureVector(dm, Ts, user);CHKERRQ(ierr);
+  ierr = VecGetDM(*Ts, &tdm);CHKERRQ(ierr);
+  ierr = DMGetDefaultSection(tdm, &tsec);CHKERRQ(ierr);
+  ierr = VecGetArray(*Ts, &T);CHKERRQ(ierr);
+  if (!rank) {
+    PetscInt  Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]], vStart, vx, vy, vz, count;
+    PetscBool byteswap = PETSC_TRUE;
+    char      filename[PETSC_MAX_PATH_LEN];
+    float    *temp;
+
+    ierr = PetscOptionsGetBool(NULL, NULL, "-byte_swap", &byteswap, NULL);CHKERRQ(ierr);
+    ierr = PetscStrcpy(filename, user->mantleBasename);CHKERRQ(ierr);
+    ierr = PetscStrcat(filename, "_therm.bin");CHKERRQ(ierr);
+    ierr = PetscViewerCreate(PETSC_COMM_SELF, &viewer);CHKERRQ(ierr);
+    ierr = PetscViewerSetType(viewer, PETSCVIEWERBINARY);CHKERRQ(ierr);
+    ierr = PetscViewerFileSetMode(viewer, FILE_MODE_READ);CHKERRQ(ierr);
+    ierr = PetscViewerFileSetName(viewer, filename);CHKERRQ(ierr);
+    ierr = PetscMalloc1(Nz, &temp);CHKERRQ(ierr);
+    /* The ordering is Y, X, Z where Z is the fastest dimension */
+    ierr = DMPlexGetDepthStratum(tdm, 0, &vStart, NULL);CHKERRQ(ierr);
+    for (vy = 0; vy < Ny; ++vy) {
+      for (vx = 0; vx < Nx; ++vx) {
+        ierr = PetscViewerRead(viewer, temp, Nz, &count, PETSC_FLOAT);CHKERRQ(ierr);
+        if (count != Nz) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Mantle temperature file %s had incorrect length", filename);
+        /* They are written little endian, so I need to swap back (mostly) */
+        if (byteswap) {ierr = PetscByteSwap(temp, PETSC_FLOAT, count);CHKERRQ(ierr);}
+        for (vz = 0; vz < Nz; ++vz) {
+          PetscInt off;
+
+          ierr = PetscSectionGetOffset(tsec, (vz*Ny + vy)*Nx + vx + vStart, &off);CHKERRQ(ierr);
+          //#define CHECKING 1
+#if CHECKING
+          p[off] = 0.0*temp[vz] + 0.7;
+#else
+          if ((temp[vz] < 0.0) || (temp[vz] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) temp[vz]);
+          T[off] = temp[vz];
+#endif
+        }
+      }
+    }
+    ierr = PetscFree(temp);CHKERRQ(ierr);
+    ierr = PetscViewerDestroy(&viewer);CHKERRQ(ierr);
+    ierr = VecRestoreArray(*Ts, &T);CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode DistributeTemperature(Vec Ts, PetscSF pointSF, Vec Tp)
+{
+  DM             dms, dmp;
+  PetscSection   secs, secp;
+  Vec            tmp;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = VecGetDM(Ts, &dms);CHKERRQ(ierr);
+  ierr = VecGetDM(Tp, &dmp);CHKERRQ(ierr);
+  ierr = DMGetDefaultSection(dms, &secs);CHKERRQ(ierr);
+  ierr = PetscSectionCreate(PetscObjectComm((PetscObject) Tp), &secp);CHKERRQ(ierr);
+  ierr = VecCreate(PETSC_COMM_SELF, &tmp);CHKERRQ(ierr);
+  ierr = DMPlexDistributeField(dms, pointSF, secs, Ts, secp, tmp);CHKERRQ(ierr);
+  ierr = VecCopy(tmp, Tp);CHKERRQ(ierr);
+  ierr = VecDestroy(&tmp);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
 static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
 {
   DM             dmDist = NULL;
+  PetscViewer    viewer;
+  PetscInt       count;
+  char           filename[PETSC_MAX_PATH_LEN];
+  char           line[PETSC_MAX_PATH_LEN];
+  double        *axes[3];
+  int           *verts = user->verts;
+  int           *perm  = user->perm;
+  int            snum, d;
   PetscInt       dim    = user->dim;
   PetscInt       cells[3];
+  PetscMPIInt    rank;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
   if (dim > 3) SETERRQ1(comm,PETSC_ERR_ARG_OUTOFRANGE,"dim %D is too big, must be <= 3",dim);
+  ierr = MPI_Comm_rank(comm, &rank);CHKERRQ(ierr);
   cells[0] = cells[1] = cells[2] = user->simplex ? dim : 3;
-  {
-    PetscViewer viewer;
-    PetscInt    count;
-    char        filename[PETSC_MAX_PATH_LEN];
-    char        line[PETSC_MAX_PATH_LEN];
-    double     *axes[3];
-    int        *verts = user->verts;
-    int        *perm  = user->perm;
-    int         snum, d;
-
+  if (!rank) {
     if (user->simplex) SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Citom grids do not use simplices. Use -simplex 0");
     ierr = PetscStrcpy(filename, user->mantleBasename);CHKERRQ(ierr);
     ierr = PetscStrcat(filename, "_vects.ascii");CHKERRQ(ierr);
-    ierr = PetscViewerCreate(comm, &viewer);CHKERRQ(ierr);
+    ierr = PetscViewerCreate(PETSC_COMM_SELF, &viewer);CHKERRQ(ierr);
     ierr = PetscViewerSetType(viewer, PETSCVIEWERASCII);CHKERRQ(ierr);
     ierr = PetscViewerFileSetMode(viewer, FILE_MODE_READ);CHKERRQ(ierr);
     ierr = PetscViewerFileSetName(viewer, filename);CHKERRQ(ierr);
@@ -1027,47 +1147,47 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     ierr = PetscViewerDestroy(&viewer);CHKERRQ(ierr);
     if (dim == 2) {verts[perm[0]] = 1;}
     for (d = 0; d < 3; ++d) cells[d] = verts[d]-1;
-    ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, cells, NULL, NULL, NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
-    /* Remap coordinates to unit ball */
-    {
-      Vec           coordinates;
-      PetscSection  coordSection;
-      PetscScalar  *coords;
-      PetscInt      vStart, vEnd, v;
-
-      ierr = DMPlexGetDepthStratum(*dm, 0, &vStart, &vEnd);CHKERRQ(ierr);
-      ierr = DMGetCoordinateSection(*dm, &coordSection);CHKERRQ(ierr);
-      ierr = DMGetCoordinatesLocal(*dm, &coordinates);CHKERRQ(ierr);
-      ierr = VecGetArray(coordinates, &coords);CHKERRQ(ierr);
-      for (v = vStart; v < vEnd; ++v) {
-        PetscInt  vert[3] = {0, 0, 0};
-        PetscReal theta, phi, r;
-        PetscInt  off;
-
-        ierr = PetscSectionGetOffset(coordSection, v, &off);CHKERRQ(ierr);
-        for (d = 0; d < dim; ++d) vert[d] = PetscRoundReal(PetscRealPart(coords[off+d])*cells[d]);
-        theta = axes[perm[0]][vert[perm[0]]]*2.0*PETSC_PI/360;
-        phi   = axes[perm[1]][vert[perm[1]]]*2.0*PETSC_PI/360;
-        r     = axes[perm[2]][vert[perm[2]]];
-        if (dim > 2) {
-          coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
-          coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
-          coords[off+2] = r*PetscCosReal(theta);
-        } else {
-#if 0
-          coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
-          coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
-#else
-          /* Goddamn it. I can't enforce no slip on curved surfaces */
-          coords[off+0] = PetscSinReal(theta)*PetscSinReal(phi);
-          coords[off+1] = r;
-#endif
-        }
-      }
-      ierr = VecRestoreArray(coordinates, &coords);CHKERRQ(ierr);
-    }
-    for (d = 0; d < 3; ++d) {ierr = PetscFree(axes[d]);CHKERRQ(ierr);}
   }
+  ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, cells, NULL, NULL, NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
+  /* Remap coordinates to unit ball */
+  {
+    Vec           coordinates;
+    PetscSection  coordSection;
+    PetscScalar  *coords;
+    PetscInt      vStart, vEnd, v;
+
+    ierr = DMPlexGetDepthStratum(*dm, 0, &vStart, &vEnd);CHKERRQ(ierr);
+    ierr = DMGetCoordinateSection(*dm, &coordSection);CHKERRQ(ierr);
+    ierr = DMGetCoordinatesLocal(*dm, &coordinates);CHKERRQ(ierr);
+    ierr = VecGetArray(coordinates, &coords);CHKERRQ(ierr);
+    for (v = vStart; v < vEnd; ++v) {
+      PetscInt  vert[3] = {0, 0, 0};
+      PetscReal theta, phi, r;
+      PetscInt  off;
+
+      ierr = PetscSectionGetOffset(coordSection, v, &off);CHKERRQ(ierr);
+      for (d = 0; d < dim; ++d) vert[d] = PetscRoundReal(PetscRealPart(coords[off+d])*cells[d]);
+      theta = axes[perm[0]][vert[perm[0]]]*2.0*PETSC_PI/360;
+      phi   = axes[perm[1]][vert[perm[1]]]*2.0*PETSC_PI/360;
+      r     = axes[perm[2]][vert[perm[2]]];
+      if (dim > 2) {
+        coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
+        coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
+        coords[off+2] = r*PetscCosReal(theta);
+      } else {
+#if 0
+        coords[off+0] = r*PetscSinReal(theta)*PetscSinReal(phi);
+        coords[off+1] = r*PetscSinReal(theta)*PetscCosReal(phi);
+#else
+        /* Goddamn it. I can't enforce no slip on curved surfaces */
+        coords[off+0] = PetscSinReal(theta)*PetscSinReal(phi);
+        coords[off+1] = r;
+#endif
+      }
+    }
+    ierr = VecRestoreArray(coordinates, &coords);CHKERRQ(ierr);
+  }
+  if (!rank) {for (d = 0; d < 3; ++d) {ierr = PetscFree(axes[d]);CHKERRQ(ierr);}}
   /* Make split labels so that we can have corners in multiple labels */
   {
     const char *names[4] = {"markerBottom", "markerRight", "markerTop", "markerLeft"};
@@ -1090,7 +1210,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   ierr = PetscObjectSetName((PetscObject)(*dm),"Mesh");CHKERRQ(ierr);
   {
     PetscInt i;
-    for (i=0;i<user->serRef;i++) {
+    for (i = 0; i < user->serRef; ++i) {
       DM dmRefined;
 
       ierr = DMPlexSetRefinementUniform(*dm,PETSC_TRUE);CHKERRQ(ierr);
@@ -1101,12 +1221,15 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
       }
     }
   }
-  /* Distribute mesh over processes */
-  ierr = DMPlexDistribute(*dm, 0, NULL, &dmDist);CHKERRQ(ierr);
-  if (dmDist) {
-    ierr = PetscObjectSetName((PetscObject)dmDist,"Distributed Mesh");CHKERRQ(ierr);
-    ierr = DMDestroy(dm);CHKERRQ(ierr);
-    *dm  = dmDist;
+  {
+    ierr = CreateInitialTemperature(*dm, &user->T, user);CHKERRQ(ierr);
+    /* Distribute mesh over processes */
+    ierr = DMPlexDistribute(*dm, 0, &user->pointSF, &dmDist);CHKERRQ(ierr);
+    if (dmDist) {
+      ierr = PetscObjectSetName((PetscObject) dmDist,"Distributed Mesh");CHKERRQ(ierr);
+      ierr = DMDestroy(dm);CHKERRQ(ierr);
+      *dm  = dmDist;
+    }
   }
   ierr = DMSetFromOptions(*dm);CHKERRQ(ierr);
   ierr = DMViewFromOptions(*dm, NULL, "-dm_view");CHKERRQ(ierr);
@@ -1319,80 +1442,13 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupMaterial(DM dm, DM dmAux, AppCtx *user)
-/*---------------------------------------------------------------------*/
-{
-  Vec            paramVec, gvec;
-  PetscSection   s;
-  PetscViewer    viewer;
-  PetscScalar   *p;
-  PetscBool      byteswap = PETSC_TRUE;
-  PetscInt       Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]], vStart, vx, vy, vz, count;
-  char           filename[PETSC_MAX_PATH_LEN];
-  float         *temp;
-  PetscErrorCode ierr;
-
-  PetscFunctionBeginUser;
-  ierr = PetscOptionsGetBool(NULL, NULL, "-byte_swap", &byteswap, NULL);CHKERRQ(ierr);
-  ierr = DMGetDefaultSection(dmAux, &s);CHKERRQ(ierr);
-  ierr = DMPlexGetDepthStratum(dmAux, 0, &vStart, NULL);CHKERRQ(ierr);
-  ierr = DMCreateLocalVector(dmAux, &paramVec);CHKERRQ(ierr);
-  ierr = VecGetArray(paramVec, &p);CHKERRQ(ierr);
-
-  ierr = PetscStrcpy(filename, user->mantleBasename);CHKERRQ(ierr);
-  ierr = PetscStrcat(filename, "_therm.bin");CHKERRQ(ierr);
-  ierr = PetscViewerCreate(PetscObjectComm((PetscObject) dm), &viewer);CHKERRQ(ierr);
-  ierr = PetscViewerSetType(viewer, PETSCVIEWERBINARY);CHKERRQ(ierr);
-  ierr = PetscViewerFileSetMode(viewer, FILE_MODE_READ);CHKERRQ(ierr);
-  ierr = PetscViewerFileSetName(viewer, filename);CHKERRQ(ierr);
-  ierr = PetscMalloc1(Nz, &temp);CHKERRQ(ierr);
-  /* The ordering is Y, X, Z where Z is the fastest dimension */
-  for (vy = 0; vy < Ny; ++vy) {
-    for (vx = 0; vx < Nx; ++vx) {
-      ierr = PetscViewerRead(viewer, temp, Nz, &count, PETSC_FLOAT);CHKERRQ(ierr);
-      if (count != Nz) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Mantle temperature file %s had incorrect length", filename);
-      /* They are written little endian, so I need to swap back (mostly) */
-      if (byteswap) {ierr = PetscByteSwap(temp, PETSC_FLOAT, count);CHKERRQ(ierr);}
-      for (vz = 0; vz < Nz; ++vz) {
-        PetscInt off;
-
-        ierr = PetscSectionGetOffset(s, (vz*Ny + vy)*Nx + vx + vStart, &off);CHKERRQ(ierr);
-        //#define CHECKING 1
-#if CHECKING
-        //p[off] = 0.1*temp[vz] + 0.7;
-        p[off] = 0.0*temp[vz] + 0.7;
-#else
-        if ((temp[vz] < 0.0) || (temp[vz] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) temp[vz]);
-        p[off] = temp[vz];
-#endif
-      }
-    }
-  }
-  ierr = PetscFree(temp);CHKERRQ(ierr);
-  ierr = PetscViewerDestroy(&viewer);CHKERRQ(ierr);
-  ierr = VecRestoreArray(paramVec, &p);CHKERRQ(ierr);
-  ierr = PetscObjectCompose((PetscObject) dm, "A", (PetscObject) paramVec);CHKERRQ(ierr);
-
-  ierr = DMViewFromOptions(dmAux, NULL, "-dm_aux_view");CHKERRQ(ierr);
-  ierr = DMGetGlobalVector(dmAux, &gvec);CHKERRQ(ierr);
-  ierr = DMLocalToGlobalBegin(dmAux, paramVec, INSERT_VALUES, gvec);CHKERRQ(ierr);
-  ierr = DMLocalToGlobalEnd(dmAux, paramVec, INSERT_VALUES, gvec);CHKERRQ(ierr);
-  ierr = PetscObjectSetName((PetscObject) gvec, "Temperature");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(gvec, NULL, "-temp_vec_view");CHKERRQ(ierr);
-  ierr = DMRestoreGlobalVector(dmAux, &gvec);CHKERRQ(ierr);
-  ierr = VecDestroy(&paramVec);CHKERRQ(ierr);
-  PetscFunctionReturn(0);
-}
-
 static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
 {
   DM              cdm = dm;
   const PetscInt  dim = user->dim;
-  PetscFE         fe[2], *feAux;
+  PetscFE         fe[2];
   PetscQuadrature q;
-  PetscDS         prob, probAux = NULL;
-  PetscInt        numAux = 1, f;
-  const char     *auxFieldNames[1] = {"temperature"};
+  PetscDS         prob;
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
@@ -1403,46 +1459,51 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
-  /* Create discretization of auxiliary fields */
-  ierr = PetscMalloc1(numAux, &feAux);CHKERRQ(ierr);
-  ierr = PetscDSCreate(PetscObjectComm((PetscObject)dm),&probAux);CHKERRQ(ierr);
-  for (f = 0; f < numAux; ++f) {
-    PetscSpace sp;
-    PetscInt   order;
-    char       prefix[PETSC_MAX_PATH_LEN];
-
-    ierr = PetscSNPrintf(prefix, PETSC_MAX_PATH_LEN, "aux_%d_", f);CHKERRQ(ierr);
-    ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, prefix, 0, &feAux[f]);CHKERRQ(ierr);
-    ierr = PetscObjectSetName((PetscObject) feAux[f], auxFieldNames[f]);CHKERRQ(ierr);
-    ierr = PetscFESetQuadrature(feAux[f], q);CHKERRQ(ierr);
-    ierr = PetscDSSetDiscretization(probAux, f, (PetscObject) feAux[f]);CHKERRQ(ierr);
-    ierr = PetscFEGetBasisSpace(feAux[f], &sp);CHKERRQ(ierr);
-    ierr = PetscSpaceGetOrder(sp, &order);CHKERRQ(ierr);
-    if (order != 1) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Temperature element must be linear, not order %D", order);
-  }
   /* Set discretization and boundary conditions for each mesh */
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 0, (PetscObject) fe[0]);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 1, (PetscObject) fe[1]);CHKERRQ(ierr);
   ierr = SetupProblem(prob, user);CHKERRQ(ierr);
-  while (cdm) {
-    DM      dmAux;
+  /* Handle temperature */
+  {
+    DM  tdm;
+    Vec Tg;
 
+    if (user->pointSF) {
+      Vec Tnew;
+
+      ierr = CreateTemperatureVector(dm, &Tnew, user);CHKERRQ(ierr);
+      ierr = DistributeTemperature(user->T, user->pointSF, Tnew);CHKERRQ(ierr);
+      ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
+      ierr = VecDestroy(&user->T);CHKERRQ(ierr);
+      user->T = Tnew;
+    }
+    ierr = VecGetDM(user->T, &tdm);CHKERRQ(ierr);
+    ierr = DMViewFromOptions(tdm, NULL, "-dm_aux_view");CHKERRQ(ierr);
+    ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+    ierr = DMLocalToGlobalBegin(tdm, user->T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+    ierr = DMLocalToGlobalEnd(tdm,   user->T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+    ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
+    ierr = VecViewFromOptions(Tg, NULL, "-temp_vec_view");CHKERRQ(ierr);
+    ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+    ierr = VecDestroy(&user->T);CHKERRQ(ierr);
+  }
+  while (cdm) {
     ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
+#if 0
+    DM dmAux;
+
     ierr = DMClone(cdm, &dmAux);CHKERRQ(ierr);
     ierr = DMPlexCopyCoordinates(cdm, dmAux);CHKERRQ(ierr);
     ierr = DMSetDS(dmAux, probAux);CHKERRQ(ierr);
     ierr = PetscObjectCompose((PetscObject) cdm, "dmAux", (PetscObject) dmAux);CHKERRQ(ierr);
     ierr = SetupMaterial(cdm, dmAux, user);CHKERRQ(ierr);
     ierr = DMDestroy(&dmAux);CHKERRQ(ierr);
-
+#endif
     ierr = DMGetCoarseDM(cdm, &cdm);CHKERRQ(ierr);
   }
   ierr = PetscFEDestroy(&fe[0]);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&fe[1]);CHKERRQ(ierr);
-  for (f = 0; f < numAux; ++f) {ierr = PetscFEDestroy(&feAux[f]);CHKERRQ(ierr);}
-  ierr = PetscDSDestroy(&probAux);CHKERRQ(ierr);
-  ierr = PetscFree(feAux);CHKERRQ(ierr);
   {
     PetscObject  pressure;
     MatNullSpace nullSpacePres;
@@ -1497,9 +1558,10 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   ierr = DMClone(dm, &dmVisc);CHKERRQ(ierr);
   ierr = DMPlexCopyCoordinates(dm, dmVisc);CHKERRQ(ierr);
   ierr = DMGetDS(dmVisc, &probVisc);CHKERRQ(ierr);
-  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "visc_", 0, &feVisc);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "visc_", PETSC_DEFAULT, &feVisc);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) feVisc, "viscosity");CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(probVisc, 0, (PetscObject) feVisc);CHKERRQ(ierr);
+  ierr = PetscFEDestroy(&feVisc);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "dmAux", &dmAux);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "A", &auxVec);CHKERRQ(ierr);
   ierr = PetscObjectCompose((PetscObject) dmVisc, "dmAux", dmAux);CHKERRQ(ierr);
@@ -1507,6 +1569,7 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   ierr = PetscDSGetConstants(prob, &numConstants, (const PetscScalar **) &constants);CHKERRQ(ierr);
   ierr = PetscDSSetConstants(probVisc, numConstants, constants);CHKERRQ(ierr);
+  ierr = PetscDSSetFromOptions(probVisc);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(dmVisc, &mu);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) mu, "Viscosity");CHKERRQ(ierr);
   switch (user->solType) {
@@ -1623,84 +1686,84 @@ int main(int argc, char **argv)
   test:
     suffix: small_q1p0_constant_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9 -snes_err_if_not_converged 0
+    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9 -snes_err_if_not_converged 0
 
   test:
     suffix: small_q1p0_diffusion_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: small_q1p0_composite_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: small_q1p0_constant
-    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: small_q1p0_diffusion
-    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: small_q1p0_composite
-    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q1p0_constant_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q1p0_diffusion_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q1p0_composite_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q1p0_constant
-    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q1p0_diffusion
-    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q1p0_composite
     requires: broken
-    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q2q1_constant_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 2 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 2 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q2q1_diffusion_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q2q1_composite_jac_check
     filter: Error: egrep "Norm of matrix"
-    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: uf16_q2q1_constant
-    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q2q1_diffusion
-    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q2q1_composite
     requires: broken
-    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
 TEST*/
