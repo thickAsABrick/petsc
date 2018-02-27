@@ -1513,6 +1513,17 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
     ierr = PetscObjectCompose(pressure, "nullspace", (PetscObject) nullSpacePres);CHKERRQ(ierr);
     ierr = MatNullSpaceDestroy(&nullSpacePres);CHKERRQ(ierr);
   }
+  {
+    PetscObject  velocity;
+    Vec          coordinates;
+    MatNullSpace nullSpaceVel;
+
+    ierr = DMGetCoordinates(dm, &coordinates);CHKERRQ(ierr);
+    ierr = DMGetField(dm, 0, &velocity);CHKERRQ(ierr);
+    ierr = MatNullSpaceCreateRigidBody(coordinates, &nullSpaceVel);CHKERRQ(ierr);
+    ierr = PetscObjectCompose(velocity, "nearnullspace", (PetscObject) nullSpaceVel);CHKERRQ(ierr);
+    ierr = MatNullSpaceDestroy(&nullSpaceVel);CHKERRQ(ierr);
+  }
   PetscFunctionReturn(0);
 }
 
