@@ -539,7 +539,7 @@ static void stokes_mass(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 static void f0_bouyancy(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                         const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                        PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+                        PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
 #ifdef SPHERICAL
   const PetscReal r      = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional readius */
@@ -557,10 +557,10 @@ static void f0_bouyancy(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   PetscInt        d;
 
 #ifdef SPHERICAL
-  for (d = 0; d < dim; ++d) f1[d] = f*(x[d]/r); /* f \hat r */
+  for (d = 0; d < dim; ++d) f0[d] = f*(x[d]/r); /* f \hat r */
 #else
-  for (d = 0; d < dim-1; ++d) f1[d] = 0.0;
-  f1[dim-1] = f;
+  for (d = 0; d < dim-1; ++d) f0[d] = 0.0;
+  f0[dim-1] = f;
 #endif
 }
 
