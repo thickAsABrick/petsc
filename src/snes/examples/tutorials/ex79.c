@@ -909,7 +909,7 @@ static void stokes_identity_J_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux
                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
-  g0[0] = 1.0/100.0;
+  g0[0] = 1.0;
 }
 static void stokes_identity_J_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                    const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
