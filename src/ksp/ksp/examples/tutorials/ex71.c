@@ -1,5 +1,6 @@
 static char help[] =  "This example illustrates the use of PCBDDC/FETI-DP with 2D/3D DMDA.\n\
-It solves the Poisson problem or the Elasticity problem\n\n";
+It solves the constant coefficient Poisson problem or the Elasticity problem \n\
+on a uniform grid of [0,cells_x] x [0,cells_y] x [0,cells_z]\n\n";
 
 /* Contributed by Wim Vanroose <wim@vanroo.se> */
 
@@ -163,13 +164,14 @@ int main(int argc,char **args)
   PC                     pc;
   Mat                    A;
   DM                     da;
-  Vec                    x,b,xcoor;
+  Vec                    x,b,xcoor,xcoorl;
   ISLocalToGlobalMapping map;
   MatNullSpace           nullsp = NULL;
   PetscInt               i;
   PetscInt               nel,nen;        /* Number of elements & element nodes */
   const PetscInt         *e_loc;         /* Local indices of element nodes (in local element order) */
   PetscInt               *e_glo = NULL;  /* Global indices of element nodes (in local element order) */
+  PetscBool              ismatis;
   PetscErrorCode         ierr;
 
   ierr = PetscInitialize(&argc,&args,(char*)0,help);if (ierr) return ierr;
@@ -214,7 +216,7 @@ int main(int argc,char **args)
     default: SETERRQ1(PETSC_COMM_WORLD,PETSC_ERR_SUP,"Unsupported dimension %D",user.dim);
     }
   }
-  ierr = DMDASetUniformCoordinates(da,0.0,1.0,0.0,1.0,0.0,1.0);CHKERRQ(ierr);
+  ierr = DMDASetUniformCoordinates(da,0.0,1.0*user.cells[0],0.0,1.0*user.cells[1],0.0,1.0*user.cells[2]);CHKERRQ(ierr);
   ierr = DMGetCoordinates(da,&xcoor);CHKERRQ(ierr);
 
   ierr = DMCreateMatrix(da,&A);CHKERRQ(ierr);
@@ -224,11 +226,25 @@ int main(int argc,char **args)
     ierr = PetscMalloc1(nel*nen,&e_glo);CHKERRQ(ierr);
     ierr = ISLocalToGlobalMappingApplyBlock(map,nen*nel,e_loc,e_glo);CHKERRQ(ierr);
   }
+
+  /* we reorder the indices since the element matrices are given in lexicographic order,
+     whereas the elements indices returned by DMDAGetElements follow the usual FEM ordering
+     i.e., element matrices     DMDA ordering
+               2---3              3---2
+              /   /              /   /
+             0---1              0---1
+  */
   for (i = 0; i < nel; ++i) {
+    PetscInt ord[8] = {0,1,3,2,4,5,7,6};
+    PetscInt j,idxs[8];
+
+    if (nen > 8) SETERRQ(PETSC_COMM_WORLD,PETSC_ERR_SUP,"Not coded");
     if (!e_glo) {
-      ierr = MatSetValuesBlockedLocal(A,nen,e_loc+i*nen,nen,e_loc+i*nen,user.elemMat,ADD_VALUES);CHKERRQ(ierr);
+      for (j=0;j<nen;j++) idxs[j] = e_loc[i*nen+ord[j]];
+      ierr = MatSetValuesBlockedLocal(A,nen,idxs,nen,idxs,user.elemMat,ADD_VALUES);CHKERRQ(ierr);
     } else {
-      ierr = MatSetValuesBlocked(A,nen,e_glo+i*nen,nen,e_glo+i*nen,user.elemMat,ADD_VALUES);CHKERRQ(ierr);
+      for (j=0;j<nen;j++) idxs[j] = e_glo[i*nen+ord[j]];
+      ierr = MatSetValuesBlocked(A,nen,idxs,nen,idxs,user.elemMat,ADD_VALUES);CHKERRQ(ierr);
     }
   }
   ierr = DMDARestoreElements(da,&nel,&nen,&e_loc);CHKERRQ(ierr);
@@ -311,6 +327,49 @@ int main(int argc,char **args)
     ierr = MatNullSpaceDestroy(&nearnullsp);CHKERRQ(ierr);
   }
 
+  /* we may want to use MG for the local solvers: attach local nearnullspace to the local matrices */
+  ierr = DMGetCoordinatesLocal(da,&xcoorl);CHKERRQ(ierr);
+  ierr = PetscObjectTypeCompare((PetscObject)A,MATIS,&ismatis);CHKERRQ(ierr);
+  if (ismatis) {
+    MatNullSpace lnullsp;
+    Mat          lA;
+
+    ierr = MatISGetLocalMat(A,&lA);CHKERRQ(ierr);
+    if (user.pde == PDE_ELASTICITY) {
+      Vec                    lc;
+      ISLocalToGlobalMapping l2l;
+      IS                     is;
+      const PetscScalar      *a;
+      const PetscInt         *idxs;
+      PetscInt               n,bs;
+
+      /* when using a DMDA, the local matrices have an additional local-to-local map
+         that maps from the DA local ordering to the ordering induced by the elements */
+      ierr = MatCreateVecs(lA,&lc,NULL);CHKERRQ(ierr);
+      ierr = MatGetLocalToGlobalMapping(lA,&l2l,NULL);CHKERRQ(ierr);
+      ierr = VecSetLocalToGlobalMapping(lc,l2l);CHKERRQ(ierr);
+      ierr = VecSetOption(lc,VEC_IGNORE_NEGATIVE_INDICES,PETSC_TRUE);CHKERRQ(ierr);
+      ierr = VecGetLocalSize(xcoorl,&n);CHKERRQ(ierr);
+      ierr = VecGetBlockSize(xcoorl,&bs);CHKERRQ(ierr);
+      ierr = ISCreateStride(PETSC_COMM_SELF,n/bs,0,1,&is);CHKERRQ(ierr);
+      ierr = ISGetIndices(is,&idxs);CHKERRQ(ierr);
+      ierr = VecGetArrayRead(xcoorl,&a);CHKERRQ(ierr);
+      ierr = VecSetValuesBlockedLocal(lc,n/bs,idxs,a,INSERT_VALUES);CHKERRQ(ierr);
+      ierr = VecAssemblyBegin(lc);CHKERRQ(ierr);
+      ierr = VecAssemblyEnd(lc);CHKERRQ(ierr);
+      ierr = VecRestoreArrayRead(xcoorl,&a);CHKERRQ(ierr);
+      ierr = ISRestoreIndices(is,&idxs);CHKERRQ(ierr);
+      ierr = ISDestroy(&is);CHKERRQ(ierr);
+      ierr = MatNullSpaceCreateRigidBody(lc,&lnullsp);CHKERRQ(ierr);
+      ierr = VecDestroy(&lc);CHKERRQ(ierr);
+    } else if (user.pde == PDE_POISSON) {
+      ierr = MatNullSpaceCreate(PETSC_COMM_SELF,PETSC_TRUE,0,NULL,&lnullsp);CHKERRQ(ierr);
+    }
+    ierr = MatSetNearNullSpace(lA,lnullsp);CHKERRQ(ierr);
+    ierr = MatNullSpaceDestroy(&lnullsp);CHKERRQ(ierr);
+    ierr = MatISRestoreLocalMat(A,&lA);CHKERRQ(ierr);
+  }
+
   ierr = KSPCreate(PETSC_COMM_WORLD,&ksp);CHKERRQ(ierr);
   ierr = KSPSetOperators(ksp,A,A);CHKERRQ(ierr);
   ierr = KSPSetType(ksp,KSPCG);CHKERRQ(ierr);
@@ -361,6 +420,24 @@ int main(int argc,char **args)
    filter: grep -v "variant HERMITIAN"
    suffix: bddc_elast_deluxe_layers
    args: -pde_type Elasticity -cells 7,9,8 -dim 3 -ksp_view -pc_bddc_coarse_redundant_pc_type svd -ksp_error_if_not_converged -pc_bddc_monolithic -pc_bddc_use_deluxe_scaling -pc_bddc_schur_layers 1
+ test:
+   requires: ml
+   nsize: 8
+   filter: grep -v "variant HERMITIAN"
+   suffix: bddc_elast_dir_approx
+   args: -pde_type Elasticity -cells 7,9,8 -dim 3 -ksp_view -pc_bddc_coarse_redundant_pc_type svd -ksp_error_if_not_converged -pc_bddc_monolithic -pc_bddc_dirichlet_pc_type ml -ksp_monitor_short -ksp_converged_reason -pc_bddc_dirichlet_approximate
+ test:
+   requires: ml
+   nsize: 8
+   filter: grep -v "variant HERMITIAN"
+   suffix: bddc_elast_neu_approx
+   args: -pde_type Elasticity -cells 7,9,8 -dim 3 -ksp_view -pc_bddc_coarse_redundant_pc_type svd -ksp_error_if_not_converged -pc_bddc_monolithic -pc_bddc_neumann_pc_type ml -ksp_monitor_short -ksp_converged_reason -pc_bddc_neumann_approximate
+ test:
+   requires: ml
+   nsize: 8
+   filter: grep -v "variant HERMITIAN"
+   suffix: bddc_elast_both_approx
+   args: -pde_type Elasticity -cells 7,9,8 -dim 3 -ksp_view -pc_bddc_coarse_redundant_pc_type svd -ksp_error_if_not_converged -pc_bddc_monolithic -pc_bddc_dirichlet_pc_type ml -pc_bddc_neumann_pc_type ml -ksp_monitor_short -ksp_converged_reason -pc_bddc_neumann_approximate -pc_bddc_dirichlet_approximate
  test:
    nsize: 8
    filter: grep -v "variant HERMITIAN"
