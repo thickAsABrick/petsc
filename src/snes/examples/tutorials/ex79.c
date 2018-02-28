@@ -1000,19 +1000,21 @@ static PetscErrorCode CreateTemperatureVector(DM dm, Vec *T, AppCtx *user)
   PetscSpace      sp;
   PetscQuadrature q;
   PetscInt        dim, order;
+  MPI_Comm        comm;
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
+  ierr = PetscObjectGetComm((PetscObject) dm, &comm);CHKERRQ(ierr);
   ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   /* Need to match velocity quadrature */
-  ierr = PetscFECreateDefault(dm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &vfe);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(comm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &vfe);CHKERRQ(ierr);
   ierr = PetscFEGetQuadrature(vfe, &q);CHKERRQ(ierr);
 
   ierr = DMClone(dm, &tdm);CHKERRQ(ierr);
   ierr = DMPlexCopyCoordinates(dm, tdm);CHKERRQ(ierr);
   ierr = DMGetDS(tdm, &tprob);CHKERRQ(ierr);
-  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "temp_", PETSC_DEFAULT, &tfe);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(comm, dim, 1, user->simplex, "temp_", PETSC_DEFAULT, &tfe);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) tfe, "temperature");CHKERRQ(ierr);
   ierr = PetscFESetQuadrature(tfe, q);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(tprob, 0, (PetscObject) tfe);CHKERRQ(ierr);
@@ -1449,14 +1451,16 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   PetscFE         fe[2];
   PetscQuadrature q;
   PetscDS         prob;
+  MPI_Comm        comm;
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
+  ierr = PetscObjectGetComm((PetscObject) dm, &comm);CHKERRQ(ierr);
   /* Create discretization of solution fields */
-  ierr = PetscFECreateDefault(dm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(comm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[0], "velocity");CHKERRQ(ierr);
   ierr = PetscFEGetQuadrature(fe[0], &q);CHKERRQ(ierr);
-  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(comm, dim, 1, user->simplex, "pres_", PETSC_DEFAULT, &fe[1]);CHKERRQ(ierr);
   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
   /* Set discretization and boundary conditions for each mesh */
@@ -1569,7 +1573,7 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   ierr = DMClone(dm, &dmVisc);CHKERRQ(ierr);
   ierr = DMPlexCopyCoordinates(dm, dmVisc);CHKERRQ(ierr);
   ierr = DMGetDS(dmVisc, &probVisc);CHKERRQ(ierr);
-  ierr = PetscFECreateDefault(dm, dim, 1, user->simplex, "visc_", PETSC_DEFAULT, &feVisc);CHKERRQ(ierr);
+  ierr = PetscFECreateDefault(PetscObjectComm((PetscObject) dm), dim, 1, user->simplex, "visc_", PETSC_DEFAULT, &feVisc);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) feVisc, "viscosity");CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(probVisc, 0, (PetscObject) feVisc);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&feVisc);CHKERRQ(ierr);
