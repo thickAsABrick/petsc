@@ -15,6 +15,10 @@ To produce nice output, use
 
   -dm_view hdf5:mantle.h5 -sol_vec_view hdf5:mantle.h5::append -initial_vec_view hdf5:mantle.h5::append -temp_vec_view hdf5:mantle.h5::append -viscosity_vec_view hdf5:mantle.h5::append
 
+and to get fields at each solver iterate
+
+  -dmsnes_solution_vec_view hdf5:mantle.h5::append -dmsnes_residual_vec_view hdf5:mantle.h5::append
+
 Testing Solver:
 
 ./ex69  -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_velocity_ksp_monitor_no -fieldsplit_velocity_ksp_converged_reason_no -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -ksp_rtol 1e-8 -fieldsplit_pressure_ksp_rtol 1e-3 -fieldsplit_pressure_pc_type lu -snes_max_it 1 -snes_error_if_not_converged 0 -snes_view -petscds_jac_pre 1
