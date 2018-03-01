@@ -641,6 +641,8 @@ static PetscErrorCode PCSetData_AGG(PC pc, Mat a_A)
 
     ierr = MatGetBlockSize(a_A, &bs);CHKERRQ(ierr);
 
+    /* Allow a user to force in the blocks size */
+    ierr = PetscOptionsGetInt(NULL, ((PetscObject) pc)->prefix, "-pc_gamg_bs", &bs, NULL);CHKERRQ(ierr);
     pc_gamg->data_cell_rows = bs;
   }
   PetscFunctionReturn(0);
