@@ -54,8 +54,10 @@ Citcom input:
 #include <petscsf.h>
 #include <petscbag.h>
 
-typedef enum {CONSTANT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NONE, NUM_SOL_TYPES} SolutionType;
-const char *solTypes[NUM_SOL_TYPES+1] = {"constant", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "none", "unknown"};
+typedef enum {NONE, BASIC, ANALYTIC_0, NUM_SOLUTION_TYPES} SolutionType;
+const char *solutionTypes[NUM_SOLUTION_TYPES+1] = {"none", "basic", "analytic_0", "unknown"};
+typedef enum {CONSTANT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
+const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
 
 typedef struct {
   PetscInt      debug;             /* The debugging level */
@@ -72,11 +74,18 @@ typedef struct {
   PetscSF       pointSF;           /* The SF describing mesh distribution */
   Vec           Tinit;             /* The initial, serial non-dimensional temperature distribution */
   /* Problem definition */
-  SolutionType  preType;           /* The type of problem for the presolve */
-  SolutionType  solType;           /* The type of problem */
+  RheologyType  muTypePre;         /* The type of rheology for the main problem */
+  SolutionType  solTypePre;        /* The type of solution for the presolve */
+  RheologyType  muType;            /* The type of rheology for the main problem */
+  SolutionType  solType;           /* The type of solution for the main solve */
   PetscErrorCode (**exactFuncs)(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar u[], void *ctx);
 } AppCtx;
 
+static PetscErrorCode zero_scalar(PetscInt dim, PetscReal time, const PetscReal coords[], PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  u[0] = 0.0;
+  return 0;
+}
 static PetscErrorCode one_scalar(PetscInt dim, PetscReal time, const PetscReal coords[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
   u[0] = 1.0;
@@ -86,6 +95,56 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
 {
   PetscInt d;
   for (d = 0; d < dim; ++d) u[d] = 0.0;
+  return 0;
+}
+
+/*
+  Our first 2D exact solution is quadratic:
+
+    u = x^2 + y^2
+    v = 2 x^2 - 2xy
+    p = x + y - 1
+
+  so that
+
+    \nabla \cdot u = 2x - 2x = 0
+
+  For constant viscosity, we have
+
+    -\nabla\cdot mu/2 (\nabla u + \nabla u^T) + \nabla p + f = 0
+    -\nabla\cdot mu / / 2x  4x-2y \ + /   2x   2y \  \ + <1 , 1> + f = 0
+                 2  \ \ 2y   -2x  /   \ 4x-2y -2x /  /
+    mu / -2 \ + <1, 1> + f = 0
+       \ -4 /
+
+  so that fx = 2mu - 1 and f_y = 4mu - 1.
+
+  For diffusion creep, we have to assume a temperature field. We will let the temperature and viscosity be be
+
+    T(y) = 1 - y
+   mu(y) = A exp((E + Pl(y) V)/(nR (T(y) + Tad(y))))
+  dmu/dy = mu ( (dPl/dy V)/(nR (T + T_ad)) - (dT/dy + dTad/dy) (E + Pl V)/(nR (T + T_ad))^2
+
+  and be careful to keep the domain entirely in the upper mantle. Now we have
+
+    -\nabla\cdot / 2 mu x  2 mu x \ + <1, 1> + f = 0
+                 \ 2 mu x -2 mu x /
+
+    < -2 mu - 2 dmu/dy x,  -2 mu + 2 dmu/dy x > + <1, 1> + f = 0
+
+  so that f = <2 mu + 2 dmu/dy x - 1, 2 mu - 2 dmu/dy x - 1>
+
+*/
+PetscErrorCode analytic_u_2d_0(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
+{
+  u[0] = x[0]*x[0] + x[1]*x[1];
+  u[1] = 2.0*x[0]*x[0] - 2.0*x[0]*x[1];
+  return 0;
+}
+
+PetscErrorCode analytic_p_2d_0(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *p, void *ctx)
+{
+  *p = x[0] + x[1] - 1.0;
   return 0;
 }
 
@@ -102,6 +161,20 @@ static PetscScalar LithostaticPressure(PetscInt dim, const PetscReal x[], PetscR
   const PetscReal  P_l = (-1./(1000.*beta))*log(1.-rho0*g*beta*z);   /* Lithostatic pressure kPa = kJ/m^3 */
 
   return P_l;
+}
+
+/* We get the derivative with respect to the dimensional coordinate z, not the non-dimensional one */
+static PetscScalar LithostaticPressureDerivativeR(PetscInt dim, const PetscReal x[], PetscReal R_E, PetscReal rho0, PetscReal beta)
+{
+  const PetscReal  g  = 9.8;          /* Acceleration due to gravity m/s^2 */
+#ifdef SPHERICAL
+  const PetscReal  r   = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
+#else
+  const PetscReal  r   = x[dim-1];                                                     /* Nondimensional radius */
+#endif
+  const PetscReal  z   = R_E*(1. - r); /* Depth m */
+
+  return -rho0*g*beta/(1000.*beta*(1.-rho0*g*beta*z));
 }
 
 /* Assume 10 Pa/m gradient */
@@ -312,6 +385,92 @@ static void CompositeViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
   f0[0] = CompositeViscosity(dim, u_x, x, constants, PetscRealPart(a[0]));
+}
+
+/* Assumes that u_x[], x[], and T are dimensionless */
+static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal T_nondim, PetscReal dT_dr_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds, PetscReal *dmu_df_dr)
+{
+#ifdef SPHERICAL
+  const PetscReal r       = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
+#else
+  const PetscReal r       = x[dim-1];                            /* Nondimensional radius */
+#endif
+  const PetscReal z       = R_E*(1. - r);                        /* Depth m */
+  const PetscBool isUpper = z < 670.0*1000.0 ? PETSC_TRUE : PETSC_FALSE; /* Are we in the upper mantle? */
+  const PetscReal T       = DeltaT*T_nondim + 273.0;             /* Temperature K */
+  const PetscReal dT_dr   = DeltaT*dT_dr_nondim/R_E;             /* Temperature gradient K/m */
+  const PetscReal R       = 8.314459848e-3;                      /* Gas constant kJ/K mol */
+  const PetscReal d_df_um = 1e4;                                 /* Grain size micrometers in the upper mantle (mum) */
+  const PetscReal d_df_lm = 4e4;                                 /* Grain size micrometers in the lower mantle (mum) */
+  const PetscReal n_df    = 1.0;                                 /* Stress exponent, dimensionless */
+  const PetscReal n_ds    = 3.5;                                 /* Stress exponent, dimensionless */
+  const PetscReal C_OH    = 1000.0;                              /* OH concentration, H/10^6 Si, dimensionless */
+  const PetscReal E_df    = 335.0;                               /* Activation energy, kJ/mol */
+  const PetscReal E_ds    = 480.0;                               /* Activation energy, kJ/mol */
+  const PetscReal V_df_um = 4e-6;                                /* Activation volume in the upper mantle, m^3/mol */
+  const PetscReal V_df_lm = 1.5e-6;                              /* Activation volume in the upper mantle, m^3/mol */
+  const PetscReal V_ds    = 11e-6;                               /* Activation volume, m^3/mol */
+  const PetscReal P_l     = LithostaticPressure(dim, x, R_E, rho0, beta); /* Lithostatic pressure, Pa */
+  const PetscReal dP_l_dr = LithostaticPressureDerivativeR(dim, x, R_E, rho0, beta); /* Lithostatic pressure derivative, Pa/m */
+  const PetscReal T_ad    = (3.e-4)*z;                           /* Adiabatic temperature, K with gradient of 3e-4 K/m */
+  const PetscReal dT_ad_dr= -3.e-4;                              /* Adiabatic temperature gradient, K/m */
+  const PetscReal eps_II  = SecondInvariantStress(dim, u_x)*(kappa/PetscSqr(R_E)); /* Second invariant of strain rate, 1/s */
+  const PetscReal A_df    = 1.0;                                 /* mum^3 / Pa^n s */
+  const PetscReal A_ds    = 9.0e-20;                             /* 1 / Pa^n s */
+  const PetscReal pre_df  = isUpper ? PetscPowReal(PetscPowRealInt(d_df_um, 3) / (A_df * C_OH), 1.0/n_df)
+                                    : PetscPowReal(PetscPowRealInt(d_df_lm, 3) / (A_df * C_OH), 1.0/n_df); /* Pa s^{1/n} */
+  const PetscReal pre_ds  = PetscPowReal(1.0 / (A_ds * PetscPowReal(C_OH, 1.2)), 1.0/n_ds);   /* Pa s^{1/n} : 25886.5 */
+  const PetscReal mid_df  = 1.0; /* s^{(n-1)/n} */
+  const PetscReal mid_ds  = PetscPowReal(eps_II, (1.0 - n_ds)/n_ds); /* s^{(n-1)/n} */
+  const PetscReal post_df = isUpper ? PetscExpReal((E_df + P_l * V_df_um)/(n_df * R * (T + T_ad)))
+                                    : PetscExpReal((E_df + P_l * V_df_lm)/(n_df * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
+  const PetscReal post_ds = PetscExpReal((E_ds + P_l * V_ds)/(n_ds * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
+  PetscReal       der_df  = 0.0; /* Dimensionless, (kJ/mol) / (kJ/mol) */
+
+  *epsilon_II = eps_II;
+  *mu_df = pre_df * mid_df * post_df;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
+  *mu_ds = eps_II <= 0.0 ? 5e24 : pre_ds * mid_ds * post_ds;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
+  if (isUpper) {
+    *dmu_df_dr  = 0.0;
+    *dmu_df_dr += *mu_df * ((dP_l_dr * V_df_um)/(n_df * R * (T + T_ad)));
+    *dmu_df_dr -= *mu_df * ((dT_dr + dT_ad_dr)*(E_df + P_l * V_df_um)/PetscSqr(n_df * R * (T + T_ad)));
+  } else {
+  }
+#if 0
+  if (*mu_df < 1.e9) PetscPrintf(PETSC_COMM_SELF, "Diffusion   pre: %g mid: %g post: %g T: %g Num: %g Denom: %g\n", pre_df, mid_df, post_df, T, E_df + P_l * V_df, n_df * R * (T + T_ad));
+  if (*mu_ds < 1.e9) PetscPrintf(PETSC_COMM_SELF, "Dislocation pre: %g mid: %g post: %g T: %g z: %g\n", pre_ds, mid_ds, post_ds, T, z);
+#endif
+  return;
+}
+
+static void analytic_2d_0_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  const PetscReal mu = 1.0;
+
+  f0[0] = 2.*mu - 1.;
+  f0[1] = 4.*mu - 1.;
+}
+
+static void analytic_2d_0_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                    const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                    const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                    PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  const PetscReal R_E     = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa   = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT  = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0    = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal beta    = constants[5]; /* Adiabatic compressibility, 1/Pa */
+  const PetscReal T       = 1. - x[dim-1];
+  const PetscReal dT_dr   = 1. - x[dim-1];
+  PetscReal       eps_II, mu_df, mu_ds, dmu_df_dr;
+
+  MantleViscosityDerivativeR(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, dT_dr, &eps_II, &mu_df, &mu_ds, &dmu_df_dr);
+  f0[0] = 2.*mu_df + 2.*dmu_df_dr*x[0] - 1.;
+  f0[1] = 2.*mu_df - 2.*dmu_df_dr*x[0] - 1.;
 }
 
 static void stokes_momentum_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -950,23 +1109,9 @@ static void stokes_identity_J_composite(PetscInt dim, PetscInt Nf, PetscInt NfAu
   g0[0] = 1.0/mu;
 }
 
-static PetscErrorCode CompositeSolutionVelocity(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar v[], void *ctx)
-{
-  PetscFunctionBegin;
-  v[0] = v[1] = 0.0;
-  PetscFunctionReturn(0);
-}
-
-static PetscErrorCode CompositeSolutionPressure(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar p[], void *ctx)
-{
-  PetscFunctionBegin;
-  p[0] = 0.0;
-  PetscFunctionReturn(0);
-}
-
 static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 {
-  PetscInt       sol;
+  PetscInt       sol, mu;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
@@ -976,8 +1121,10 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->coarsen         = 0;
   options->simplex         = PETSC_TRUE;
   options->showError       = PETSC_FALSE;
-  options->preType         = NONE;
-  options->solType         = CONSTANT;
+  options->muTypePre       = CONSTANT;
+  options->solTypePre      = NONE;
+  options->muType          = CONSTANT;
+  options->solType         = BASIC;
   options->mantleBasename[0] = '\0';
   options->pointSF         = NULL;
   options->Tinit           = NULL;
@@ -989,11 +1136,17 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   ierr = PetscOptionsInt("-refine", "Number of parallel uniform refinement steps", "ex69.c", options->refine, &options->refine, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsInt("-coarsen", "Number of parallel uniform coarsening steps", "ex69.c", options->coarsen, &options->coarsen, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex69.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
-  sol  = options->preType;
-  ierr = PetscOptionsEList("-pre_type", "Type of problem for presolve", "ex69.c", solTypes, NUM_SOL_TYPES, solTypes[options->preType], &sol, NULL);CHKERRQ(ierr);
-  options->preType = (SolutionType) sol;
+  mu   = options->muTypePre;
+  ierr = PetscOptionsEList("-mu_type_pre", "Type of rheology for the presolve", "ex69.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muTypePre], &mu, NULL);CHKERRQ(ierr);
+  options->muTypePre = (RheologyType) mu;
+  mu   = options->muType;
+  ierr = PetscOptionsEList("-mu_type", "Type of rheology", "ex69.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muType], &mu, NULL);CHKERRQ(ierr);
+  options->muType = (RheologyType) mu;
+  sol  = options->solTypePre;
+  ierr = PetscOptionsEList("-sol_type_pre", "Type of problem for presolve", "ex69.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solTypePre], &sol, NULL);CHKERRQ(ierr);
+  options->solTypePre = (SolutionType) sol;
   sol  = options->solType;
-  ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex69.c", solTypes, NUM_SOL_TYPES, solTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex69.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
   options->solType = (SolutionType) sol;
   ierr = PetscOptionsString("-mantle_basename", "The basename for mantle files", "ex69.c", options->mantleBasename, options->mantleBasename, sizeof(options->mantleBasename), NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
@@ -1268,170 +1421,198 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupEquations(PetscDS prob, SolutionType solType)
+static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType muType, SolutionType solType)
 {
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
   switch (solType) {
-  case CONSTANT:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_constant);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_constant);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_constant);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
+  case BASIC:
+    switch (muType) {
+    case CONSTANT:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_constant);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_constant);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_constant);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, stokes_momentum_vel_J_mu_test,  stokes_momentum_vel_J_test);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST2:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test2);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test2);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test2);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST3:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test3);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test3);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test3);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST4:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test4);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test4);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test4);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST5:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test5);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test5);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test5);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST6:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test6);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test6);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test6);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case TEST7:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test7);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test7);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test7);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case DIFFUSION:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_diffusion);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_diffusion, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case DISLOCATION:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_dislocation);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_dislocation);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_dislocation);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_dislocation, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    case COMPOSITE:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_composite);CHKERRQ(ierr);
+      ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_composite);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_composite);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_composite, NULL, NULL, NULL);CHKERRQ(ierr);
+      break;
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid rheology type %d (%s)", (PetscInt) muType, rheologyTypes[PetscMin(muType, NUM_RHEOLOGY_TYPES)]);
+    }
     break;
-  case TEST:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, stokes_momentum_vel_J_mu_test,  stokes_momentum_vel_J_test);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
+  case ANALYTIC_0:
+    switch (dim) {
+    case 2:
+      switch (muType) {
+      case CONSTANT:
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_constant, stokes_momentum_constant);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_constant);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_constant);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
+        break;
+      case DIFFUSION:
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_diffusion, stokes_momentum_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_diffusion, NULL, NULL, NULL);CHKERRQ(ierr);
+        break;
+      default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid rheology type %d (%s)", (PetscInt) muType, rheologyTypes[PetscMin(muType, NUM_RHEOLOGY_TYPES)]);
+      }
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", dim, solutionTypes[solType]);
+    }
     break;
-  case TEST2:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test2);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test2);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test2);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case TEST3:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test3);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test3);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test3);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case TEST4:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test4);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test4);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test4);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case TEST5:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test5);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test5);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test5);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case TEST6:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test6);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test6);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test6);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case TEST7:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test7);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test7);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test7);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case DIFFUSION:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_diffusion);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_diffusion, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case DISLOCATION:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_dislocation);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_dislocation);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_dislocation);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_dislocation, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  case COMPOSITE:
-    ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_composite);CHKERRQ(ierr);
-    ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_composite);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_composite);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_composite, NULL, NULL, NULL);CHKERRQ(ierr);
-    break;
-  default:
-    SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) solType, solTypes[PetscMin(solType, NUM_SOL_TYPES)]);
+  default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) solType, solutionTypes[PetscMin(solType, NUM_SOLUTION_TYPES)]);
   }
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
+static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
 {
   const PetscInt id  = 1;
   PetscInt       comp;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
-  ierr = SetupEquations(prob, user->solType);CHKERRQ(ierr);
-  switch (user->dim) {
-  case 2:
-    switch (user->solType) {
-    case CONSTANT:
-    case TEST:
-    case TEST2:
-    case TEST3:
-    case TEST4:
-    case TEST5:
-    case TEST6:
-    case TEST7:
-    case DIFFUSION:
-    case DISLOCATION:
-    case COMPOSITE:
-      user->exactFuncs[0] = CompositeSolutionVelocity;
-      user->exactFuncs[1] = CompositeSolutionPressure;
+  ierr = SetupEquations(prob, dim, user->muType, user->solType);CHKERRQ(ierr);
+  switch (user->solType) {
+  case NONE:
+  case BASIC:
+    user->exactFuncs[0] = zero_vector;
+    user->exactFuncs[1] = zero_scalar;
+    break;
+  case ANALYTIC_0:
+    switch (user->dim) {
+    case 2:
+      user->exactFuncs[0] = analytic_u_2d_0;
+      user->exactFuncs[1] = analytic_p_2d_0;
       break;
-    default:
-      SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solTypes[PetscMin(user->solType, NUM_SOL_TYPES)]);
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", user->dim, solutionTypes[user->solType]);
     }
     break;
-  default:
-    SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid dimension %D", user->dim);
+  default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solutionTypes[PetscMin(user->solType, NUM_SOLUTION_TYPES)]);
   }
   comp = 1;
   ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallB", "markerBottom", 0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
@@ -1496,7 +1677,7 @@ static PetscErrorCode SetupDiscretization(MPI_Comm comm, PetscDS *newprob, AppCt
   ierr = PetscDSSetDiscretization(prob, 1, (PetscObject) fe[1]);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&fe[0]);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&fe[1]);CHKERRQ(ierr);
-  ierr = SetupProblem(prob, user);CHKERRQ(ierr);
+  ierr = SetupProblem(prob, dim, user);CHKERRQ(ierr);
   *newprob = prob;
   PetscFunctionReturn(0);
 }
@@ -1645,11 +1826,11 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   ierr = PetscDSSetFromOptions(probVisc);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(dmVisc, &mu);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) mu, "Viscosity");CHKERRQ(ierr);
-  switch (user->solType) {
+  switch (user->muType) {
   case DIFFUSION:   funcs[0] = DiffusionCreepViscosityf0;break;
   case DISLOCATION: funcs[0] = DislocationCreepViscosityf0;break;
   case COMPOSITE:   funcs[0] = CompositeViscosityf0;break;
-  default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No viscosity function for solution type %d (%s)", (PetscInt) user->solType, solTypes[PetscMin(user->solType, NUM_SOL_TYPES)]);
+  default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid rheology type %d (%s)", (PetscInt) user->muType, rheologyTypes[PetscMin(user->muType, NUM_RHEOLOGY_TYPES)]);
   }
   ierr = DMProjectField(dmVisc, 0.0, u, funcs, INSERT_VALUES, mu);CHKERRQ(ierr);
   ierr = VecViewFromOptions(mu, NULL, "-viscosity_vec_view");CHKERRQ(ierr);
@@ -1715,10 +1896,13 @@ int main(int argc, char **argv)
   ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
   ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
-  if (user.preType != NONE) {
-    ierr = SetupEquations(prob, user.preType);CHKERRQ(ierr);
+  if (user.solTypePre != NONE) {
+    PetscInt dim;
+
+    ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
+    ierr = SetupEquations(prob, dim, user.muTypePre, user.solTypePre);CHKERRQ(ierr);
     ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
-    ierr = SetupEquations(prob, user.solType);CHKERRQ(ierr);
+    ierr = SetupEquations(prob, dim, user.muType, user.solType);CHKERRQ(ierr);
   }
   ierr = PetscDSDestroy(&prob);CHKERRQ(ierr);
   /* Solve problem */
