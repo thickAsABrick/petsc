@@ -63,13 +63,14 @@ typedef struct {
   /* Domain and mesh definition */
   PetscInt      dim;               /* The topological mesh dimension */
   PetscBool     simplex;           /* Use simplices or tensor product cells */
-  PetscInt      serRef;            /* Number of serial refinements before the mesh gets distributed */
+  PetscInt      refine;            /* Number of parallel refinements after the mesh gets distributed */
+  PetscInt      coarsen;           /* Number of parallel coarsenings after the mesh gets distributed */
   char          mantleBasename[PETSC_MAX_PATH_LEN];
   int           verts[3];          /* The number of vertices in each dimension for mantle problems */
   int           perm[3] ;          /* The permutation of axes for mantle problems */
-  /* Parallel temperature input */
-  Vec           T;                 /* The non-dimensional temperature field */
+  /* Input distribution */
   PetscSF       pointSF;           /* The SF describing mesh distribution */
+  Vec           Tinit;             /* The initial, serial non-dimensional temperature distribution */
   /* Problem definition */
   SolutionType  preType;           /* The type of problem for the presolve */
   SolutionType  solType;           /* The type of problem */
@@ -971,19 +972,22 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   PetscFunctionBeginUser;
   options->debug           = 0;
   options->dim             = 2;
-  options->serRef          = 0;
+  options->refine          = 0;
+  options->coarsen         = 0;
   options->simplex         = PETSC_TRUE;
   options->showError       = PETSC_FALSE;
   options->preType         = NONE;
   options->solType         = CONSTANT;
   options->mantleBasename[0] = '\0';
   options->pointSF         = NULL;
+  options->Tinit           = NULL;
 
   ierr = PetscOptionsBegin(comm, "", "Variable-Viscosity Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
   ierr = PetscOptionsInt("-debug", "The debugging level", "ex69.c", options->debug, &options->debug, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsInt("-dim", "The topological mesh dimension", "ex69.c", options->dim, &options->dim, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-simplex", "Use simplices or tensor product cells", "ex69.c", options->simplex, &options->simplex, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-serial_refinements", "Number of serial uniform refinements steps", "ex69.c", options->serRef, &options->serRef, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-refine", "Number of parallel uniform refinement steps", "ex69.c", options->refine, &options->refine, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-coarsen", "Number of parallel uniform coarsening steps", "ex69.c", options->coarsen, &options->coarsen, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex69.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
   sol  = options->preType;
   ierr = PetscOptionsEList("-pre_type", "Type of problem for presolve", "ex69.c", solTypes, NUM_SOL_TYPES, solTypes[options->preType], &sol, NULL);CHKERRQ(ierr);
@@ -996,9 +1000,13 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode CreateTemperatureVector(DM dm, Vec *T, AppCtx *user)
+/* Create non-dimensional local temperature vector named "temperature" in the DM
+   Note: The user should NOT destroy T since it is just a borrowed reference for convenience
+*/
+static PetscErrorCode CreateTemperatureVector(DM dm, AppCtx *user)
 {
   DM              tdm;
+  Vec             temp;
   PetscFE         tfe, vfe;
   PetscDS         tprob, prob;
   PetscSpace      sp;
@@ -1024,20 +1032,22 @@ static PetscErrorCode CreateTemperatureVector(DM dm, Vec *T, AppCtx *user)
   ierr = PetscDSSetDiscretization(tprob, 0, (PetscObject) tfe);CHKERRQ(ierr);
   ierr = PetscFEGetBasisSpace(tfe, &sp);CHKERRQ(ierr);
   ierr = PetscSpaceGetOrder(sp, &order);CHKERRQ(ierr);
-  if (order != 1) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Temperature element must be linear, not order %D", order);
+  if (order != 1) SETERRQ1(comm, PETSC_ERR_ARG_WRONG, "Temperature element must be linear, not order %D", order);
   ierr = PetscDSSetFromOptions(tprob);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&tfe);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&vfe);CHKERRQ(ierr);
-  ierr = DMCreateLocalVector(tdm, T);CHKERRQ(ierr);
+  ierr = DMCreateLocalVector(tdm, &temp);CHKERRQ(ierr);
   ierr = PetscObjectCompose((PetscObject) dm, "dmAux", (PetscObject) tdm);CHKERRQ(ierr);
-  ierr = PetscObjectCompose((PetscObject) dm, "A",     (PetscObject) *T);CHKERRQ(ierr);
+  ierr = PetscObjectCompose((PetscObject) dm, "A",     (PetscObject) temp);CHKERRQ(ierr);
+  ierr = VecDestroy(&temp);CHKERRQ(ierr);
   ierr = DMDestroy(&tdm);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode CreateInitialTemperature(DM dm, Vec *Ts, AppCtx *user)
+static PetscErrorCode CreateInitialTemperature(DM dm, AppCtx *user)
 {
   DM             tdm;
+  Vec            Ts;
   PetscSection   tsec;
   PetscViewer    viewer;
   PetscScalar   *T;
@@ -1046,10 +1056,11 @@ static PetscErrorCode CreateInitialTemperature(DM dm, Vec *Ts, AppCtx *user)
 
   PetscFunctionBeginUser;
   ierr = MPI_Comm_rank(PetscObjectComm((PetscObject) dm), &rank);CHKERRQ(ierr);
-  ierr = CreateTemperatureVector(dm, Ts, user);CHKERRQ(ierr);
-  ierr = VecGetDM(*Ts, &tdm);CHKERRQ(ierr);
+  ierr = CreateTemperatureVector(dm, user);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &Ts);CHKERRQ(ierr);
   ierr = DMGetDefaultSection(tdm, &tsec);CHKERRQ(ierr);
-  ierr = VecGetArray(*Ts, &T);CHKERRQ(ierr);
+  ierr = VecGetArray(Ts, &T);CHKERRQ(ierr);
   if (!rank) {
     PetscInt  Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]], vStart, vx, vy, vz, count;
     PetscBool byteswap = PETSC_TRUE;
@@ -1088,27 +1099,49 @@ static PetscErrorCode CreateInitialTemperature(DM dm, Vec *Ts, AppCtx *user)
     }
     ierr = PetscFree(temp);CHKERRQ(ierr);
     ierr = PetscViewerDestroy(&viewer);CHKERRQ(ierr);
-    ierr = VecRestoreArray(*Ts, &T);CHKERRQ(ierr);
+    ierr = VecRestoreArray(Ts, &T);CHKERRQ(ierr);
   }
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode DistributeTemperature(Vec Ts, PetscSF pointSF, Vec Tp)
+/* Distribute initial serial temperature to the new distributed mesh */
+static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
 {
-  DM             dms, dmp;
-  PetscSection   secs, secp;
-  Vec            tmp;
+  DM             tdm;
+  Vec            T, Tg;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
-  ierr = VecGetDM(Ts, &dms);CHKERRQ(ierr);
-  ierr = VecGetDM(Tp, &dmp);CHKERRQ(ierr);
-  ierr = DMGetDefaultSection(dms, &secs);CHKERRQ(ierr);
-  ierr = PetscSectionCreate(PetscObjectComm((PetscObject) Tp), &secp);CHKERRQ(ierr);
-  ierr = VecCreate(PETSC_COMM_SELF, &tmp);CHKERRQ(ierr);
-  ierr = DMPlexDistributeField(dms, pointSF, secs, Ts, secp, tmp);CHKERRQ(ierr);
-  ierr = VecCopy(tmp, Tp);CHKERRQ(ierr);
-  ierr = VecDestroy(&tmp);CHKERRQ(ierr);
+  if (user->pointSF) {
+    DM             dms, dmp;
+    PetscSection   secs, secp;
+    Vec            tmp;
+
+    ierr = CreateTemperatureVector(dm, user);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+
+    ierr = VecGetDM(user->Tinit, &dms);CHKERRQ(ierr);
+    ierr = VecGetDM(T, &dmp);CHKERRQ(ierr);
+    ierr = DMGetDefaultSection(dms, &secs);CHKERRQ(ierr);
+    ierr = PetscSectionCreate(PetscObjectComm((PetscObject) T), &secp);CHKERRQ(ierr);
+    ierr = VecCreate(PETSC_COMM_SELF, &tmp);CHKERRQ(ierr);
+    ierr = DMPlexDistributeField(dms, user->pointSF, secs, user->Tinit, secp, tmp);CHKERRQ(ierr);
+    ierr = VecCopy(tmp, T);CHKERRQ(ierr);
+    ierr = VecDestroy(&tmp);CHKERRQ(ierr);
+
+    ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
+    ierr = VecDestroy(&user->Tinit);CHKERRQ(ierr);
+  }
+  ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(tdm, NULL, "-dm_aux_view");CHKERRQ(ierr);
+  ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(Tg, NULL, "-temp_vec_view");CHKERRQ(ierr);
+  ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1215,30 +1248,23 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   }
   ierr = PetscObjectSetName((PetscObject)(*dm),"Mesh");CHKERRQ(ierr);
   {
-    PetscInt i;
-    for (i = 0; i < user->serRef; ++i) {
-      DM dmRefined;
-
-      ierr = DMPlexSetRefinementUniform(*dm,PETSC_TRUE);CHKERRQ(ierr);
-      ierr = DMRefine(*dm,PetscObjectComm((PetscObject)*dm),&dmRefined);CHKERRQ(ierr);
-      if (dmRefined) {
-        ierr = DMDestroy(dm);CHKERRQ(ierr);
-        *dm  = dmRefined;
-      }
-    }
-  }
-  {
-    ierr = CreateInitialTemperature(*dm, &user->T, user);CHKERRQ(ierr);
+    ierr = CreateInitialTemperature(*dm, user);CHKERRQ(ierr);
     /* Distribute mesh over processes */
     ierr = DMPlexDistribute(*dm, 0, &user->pointSF, &dmDist);CHKERRQ(ierr);
     if (dmDist) {
+      DM  tdm;
+      Vec T;
+
       ierr = PetscObjectSetName((PetscObject) dmDist,"Distributed Mesh");CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) *dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) *dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+      user->Tinit = T;
+      ierr = PetscObjectReference((PetscObject) user->Tinit);CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) *dm, "A", NULL);CHKERRQ(ierr);
       ierr = DMDestroy(dm);CHKERRQ(ierr);
       *dm  = dmDist;
     }
   }
-  ierr = DMSetFromOptions(*dm);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(*dm, NULL, "-dm_view");CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1448,18 +1474,15 @@ static PetscErrorCode SetupProblem(PetscDS prob, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
+static PetscErrorCode SetupDiscretization(MPI_Comm comm, PetscDS *newprob, AppCtx *user)
 {
-  DM              cdm = dm;
   const PetscInt  dim = user->dim;
   PetscFE         fe[2];
   PetscQuadrature q;
   PetscDS         prob;
-  MPI_Comm        comm;
   PetscErrorCode  ierr;
 
   PetscFunctionBeginUser;
-  ierr = PetscObjectGetComm((PetscObject) dm, &comm);CHKERRQ(ierr);
   /* Create discretization of solution fields */
   ierr = PetscFECreateDefault(comm, dim, dim, user->simplex, "vel_", PETSC_DEFAULT, &fe[0]);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[0], "velocity");CHKERRQ(ierr);
@@ -1468,70 +1491,101 @@ static PetscErrorCode SetupDiscretization(DM dm, AppCtx *user)
   ierr = PetscFESetQuadrature(fe[1], q);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) fe[1], "pressure");CHKERRQ(ierr);
   /* Set discretization and boundary conditions for each mesh */
-  ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
+  ierr = PetscDSCreate(comm, &prob);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 0, (PetscObject) fe[0]);CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(prob, 1, (PetscObject) fe[1]);CHKERRQ(ierr);
-  ierr = SetupProblem(prob, user);CHKERRQ(ierr);
-  /* Handle temperature */
-  {
-    DM  tdm;
-    Vec Tg;
-
-    if (user->pointSF) {
-      Vec Tnew;
-
-      ierr = CreateTemperatureVector(dm, &Tnew, user);CHKERRQ(ierr);
-      ierr = DistributeTemperature(user->T, user->pointSF, Tnew);CHKERRQ(ierr);
-      ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
-      ierr = VecDestroy(&user->T);CHKERRQ(ierr);
-      user->T = Tnew;
-    }
-    ierr = VecGetDM(user->T, &tdm);CHKERRQ(ierr);
-    ierr = DMViewFromOptions(tdm, NULL, "-dm_aux_view");CHKERRQ(ierr);
-    ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
-    ierr = DMLocalToGlobalBegin(tdm, user->T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-    ierr = DMLocalToGlobalEnd(tdm,   user->T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-    ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
-    ierr = VecViewFromOptions(Tg, NULL, "-temp_vec_view");CHKERRQ(ierr);
-    ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
-    ierr = VecDestroy(&user->T);CHKERRQ(ierr);
-  }
-  while (cdm) {
-    ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
-#if 0
-    DM dmAux;
-
-    ierr = DMClone(cdm, &dmAux);CHKERRQ(ierr);
-    ierr = DMPlexCopyCoordinates(cdm, dmAux);CHKERRQ(ierr);
-    ierr = DMSetDS(dmAux, probAux);CHKERRQ(ierr);
-    ierr = PetscObjectCompose((PetscObject) cdm, "dmAux", (PetscObject) dmAux);CHKERRQ(ierr);
-    ierr = SetupMaterial(cdm, dmAux, user);CHKERRQ(ierr);
-    ierr = DMDestroy(&dmAux);CHKERRQ(ierr);
-#endif
-    ierr = DMGetCoarseDM(cdm, &cdm);CHKERRQ(ierr);
-  }
   ierr = PetscFEDestroy(&fe[0]);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&fe[1]);CHKERRQ(ierr);
-  {
-    PetscObject  pressure;
-    MatNullSpace nullSpacePres;
+  ierr = SetupProblem(prob, user);CHKERRQ(ierr);
+  *newprob = prob;
+  PetscFunctionReturn(0);
+}
 
-    ierr = DMGetField(dm, 1, &pressure);CHKERRQ(ierr);
-    ierr = MatNullSpaceCreate(PetscObjectComm(pressure), PETSC_TRUE, 0, NULL, &nullSpacePres);CHKERRQ(ierr);
-    ierr = PetscObjectCompose(pressure, "nullspace", (PetscObject) nullSpacePres);CHKERRQ(ierr);
-    ierr = MatNullSpaceDestroy(&nullSpacePres);CHKERRQ(ierr);
-  }
-  {
-    PetscObject  velocity;
-    Vec          coordinates;
-    MatNullSpace nullSpaceVel;
+static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *user)
+{
+  DM             rdm = dm, tdm, cdm = dm, ctdm;
+  PetscInt       dim, c, r;
+  PetscErrorCode ierr;
 
-    ierr = DMGetCoordinates(dm, &coordinates);CHKERRQ(ierr);
-    ierr = DMGetField(dm, 0, &velocity);CHKERRQ(ierr);
-    ierr = MatNullSpaceCreateRigidBody(coordinates, &nullSpaceVel);CHKERRQ(ierr);
-    ierr = PetscObjectCompose(velocity, "nearnullspace", (PetscObject) nullSpaceVel);CHKERRQ(ierr);
-    ierr = MatNullSpaceDestroy(&nullSpaceVel);CHKERRQ(ierr);
+  PetscFunctionBeginUser;
+  ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
+  ierr = DMSetDS(dm, prob);CHKERRQ(ierr);
+  for (c = 0; c < user->coarsen; ++c) {
+    Mat      In;
+    Vec      Rscale, T, cT;
+    PetscInt cells[3] = {0, 0, 0}, d;
+    PetscInt div = 2*c; /* The divisor in each direction */
+
+    for (d = 0; d < dim; ++d) {
+      if ((user->verts[d]-1) % div) SETERRQ3(PetscObjectComm((PetscObject) rdm), PETSC_ERR_ARG_WRONG, "Cannot divide Cells_%c = %D by %D evenly", 'x'+((char) d), user->verts[d]-1, div);
+      cells[d] = (user->verts[d]-1)/div;
+    }
+    ierr = DMPlexCreateBoxMesh(PetscObjectComm((PetscObject) rdm), dim, PETSC_FALSE, cells, NULL, NULL, NULL, PETSC_TRUE, &cdm);CHKERRQ(ierr);
+    ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
+    ierr = DMSetCoarseDM(rdm, cdm);CHKERRQ(ierr);
+    /* SetupMaterial */
+    ierr = CreateTemperatureVector(cdm, user);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) rdm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) rdm, "A", (PetscObject *) &T);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) cdm, "dmAux", (PetscObject *) &ctdm);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) cdm, "A", (PetscObject *) &cT);CHKERRQ(ierr);
+    ierr = DMCreateInterpolation(ctdm, tdm, &In, &Rscale);CHKERRQ(ierr);
+    ierr = MatMultTranspose(In, T, cT);CHKERRQ(ierr);
+    ierr = VecPointwiseMult(cT, cT, Rscale);CHKERRQ(ierr);
+    ierr = MatDestroy(&In);CHKERRQ(ierr);
+    ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
+
+    rdm = cdm;
   }
+  for (r = 0; r < user->refine; ++r) {
+    Mat In;
+    Vec Rscale, T, cT;
+
+    ierr = DMPlexSetRefinementUniform(cdm, PETSC_TRUE);CHKERRQ(ierr);
+    ierr = DMRefine(cdm, PetscObjectComm((PetscObject) cdm), &rdm);CHKERRQ(ierr);
+    ierr = DMPlexSetRegularRefinement(rdm, PETSC_TRUE);CHKERRQ(ierr);
+    ierr = DMSetDS(rdm, prob);CHKERRQ(ierr);
+    ierr = DMSetCoarseDM(rdm, cdm);CHKERRQ(ierr);
+    /* SetupMaterial */
+    ierr = CreateTemperatureVector(rdm, user);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) cdm, "dmAux", (PetscObject *) &ctdm);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) cdm, "A", (PetscObject *) &cT);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) rdm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+    ierr = PetscObjectQuery((PetscObject) rdm, "A", (PetscObject *) &T);CHKERRQ(ierr);
+    ierr = DMSetCoarseDM(tdm, ctdm);CHKERRQ(ierr);
+    ierr = DMCreateInterpolation(ctdm, tdm, &In, &Rscale);CHKERRQ(ierr);
+    ierr = MatMult(In, cT, T);CHKERRQ(ierr);
+    ierr = MatDestroy(&In);CHKERRQ(ierr);
+    ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
+
+    ierr = DMDestroy(&cdm);CHKERRQ(ierr);
+    cdm = rdm;
+  }
+  if (user->refine) {*newdm = rdm;}
+  else              {*newdm = dm;}
+  ierr = DMSetFromOptions(*newdm);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(*newdm, NULL, "-dm_view");CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode CreateNullSpaces(DM dm, AppCtx *user)
+{
+  PetscObject    pressure,      velocity;
+  MatNullSpace   nullSpacePres, nullSpaceVel;
+  Vec            coordinates;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = DMGetField(dm, 1, &pressure);CHKERRQ(ierr);
+  ierr = MatNullSpaceCreate(PetscObjectComm(pressure), PETSC_TRUE, 0, NULL, &nullSpacePres);CHKERRQ(ierr);
+  ierr = PetscObjectCompose(pressure, "nullspace", (PetscObject) nullSpacePres);CHKERRQ(ierr);
+  ierr = MatNullSpaceDestroy(&nullSpacePres);CHKERRQ(ierr);
+
+  ierr = DMGetCoordinates(dm, &coordinates);CHKERRQ(ierr);
+  ierr = DMGetField(dm, 0, &velocity);CHKERRQ(ierr);
+  ierr = MatNullSpaceCreateRigidBody(coordinates, &nullSpaceVel);CHKERRQ(ierr);
+  ierr = PetscObjectCompose(velocity, "nearnullspace", (PetscObject) nullSpaceVel);CHKERRQ(ierr);
+  ierr = MatNullSpaceDestroy(&nullSpaceVel);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1623,21 +1677,19 @@ int main(int argc, char **argv)
 
   ierr = PetscInitialize(&argc, &argv, NULL,help);if (ierr) return ierr;
   ierr = ProcessOptions(PETSC_COMM_WORLD, &user);CHKERRQ(ierr);
-  ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
-  ierr = CreateMesh(PETSC_COMM_WORLD, &user, &dm);CHKERRQ(ierr);
-  ierr = SNESSetDM(snes, dm);CHKERRQ(ierr);
-  ierr = DMSetApplicationContext(dm, &user);CHKERRQ(ierr);
-  /* Setup problem */
   ierr = PetscMalloc(2 * sizeof(void (*)(const PetscReal[], PetscScalar *, void *)), &user.exactFuncs);CHKERRQ(ierr);
-  ierr = SetupDiscretization(dm, &user);CHKERRQ(ierr);
+  ierr = CreateMesh(PETSC_COMM_WORLD, &user, &dm);CHKERRQ(ierr);
+  ierr = SetupDiscretization(PETSC_COMM_WORLD, &prob, &user);CHKERRQ(ierr);
+  ierr = DistributeTemperature(dm, &user);CHKERRQ(ierr);
+  ierr = CreateHierarchy(dm, prob, &dm, &user);CHKERRQ(ierr);
+  ierr = CreateNullSpaces(dm, &user);CHKERRQ(ierr);
+  ierr = DMSetApplicationContext(dm, &user);CHKERRQ(ierr);
   ierr = DMPlexCreateClosureIndex(dm, NULL);CHKERRQ(ierr);
-  ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
-  ierr = PetscDSGetConstants(prob, NULL, (const PetscScalar **) &ctxs[0]);CHKERRQ(ierr);
-  ierr = PetscDSGetConstants(prob, NULL, (const PetscScalar **) &ctxs[1]);CHKERRQ(ierr);
-
   ierr = DMCreateGlobalVector(dm, &u);CHKERRQ(ierr);
   ierr = VecDuplicate(u, &r);CHKERRQ(ierr);
 
+  ierr = SNESCreate(PETSC_COMM_WORLD, &snes);CHKERRQ(ierr);
+  ierr = SNESSetDM(snes, dm);CHKERRQ(ierr);
   ierr = DMPlexSetSNESLocalFEM(dm,&user,&user,&user);CHKERRQ(ierr);
   ierr = CreatePressureNullSpace(dm, &user, &nullVec, &nullSpace);CHKERRQ(ierr);
 
@@ -1649,6 +1701,8 @@ int main(int argc, char **argv)
   ierr = MatSetNullSpace(J, nullSpace);CHKERRQ(ierr);
 
   /* Make exact solution */
+  ierr = PetscDSGetConstants(prob, NULL, (const PetscScalar **) &ctxs[0]);CHKERRQ(ierr);
+  ierr = PetscDSGetConstants(prob, NULL, (const PetscScalar **) &ctxs[1]);CHKERRQ(ierr);
   ierr = DMProjectFunction(dm, 0.0, user.exactFuncs, ctxs, INSERT_ALL_VALUES, u);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Exact Solution");CHKERRQ(ierr);
   ierr = VecViewFromOptions(u, NULL, "-exact_vec_view");CHKERRQ(ierr);
@@ -1666,6 +1720,7 @@ int main(int argc, char **argv)
     ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
     ierr = SetupEquations(prob, user.solType);CHKERRQ(ierr);
   }
+  ierr = PetscDSDestroy(&prob);CHKERRQ(ierr);
   /* Solve problem */
   ierr = SNESSolve(snes, NULL, u);CHKERRQ(ierr);
   /* Compute error and pressure integral for computed solution */
