@@ -284,6 +284,7 @@ static PetscReal SecondInvariantStress(PetscInt dim, const PetscScalar u_x[])
   return SecondInvariantSymmetric(dim, epsilon);
 }
 
+#define MOHO 670.0*1000.0
 /* Assumes that u_x[], x[], and T are dimensionless */
 static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
 {
@@ -293,7 +294,7 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
   const PetscReal r       = x[dim-1];                            /* Nondimensional radius */
 #endif
   const PetscReal z       = R_E*(1. - r);                        /* Depth m */
-  const PetscBool isUpper = z < 670.0*1000.0 ? PETSC_TRUE : PETSC_FALSE; /* Are we in the upper mantle? */
+  const PetscBool isUpper = z < MOHO ? PETSC_TRUE : PETSC_FALSE; /* Are we in the upper mantle? */
   const PetscReal T       = DeltaT*T_nondim + 273.0;             /* Temperature K */
   const PetscReal R       = 8.314459848e-3;                      /* Gas constant kJ/K mol */
   const PetscReal d_df_um = 1e4;                                 /* Grain size micrometers in the upper mantle (mum) */
@@ -425,7 +426,7 @@ static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], co
   const PetscReal r       = x[dim-1];                            /* Nondimensional radius */
 #endif
   const PetscReal z       = R_E*(1. - r);                        /* Depth m */
-  const PetscBool isUpper = z < 670.0*1000.0 ? PETSC_TRUE : PETSC_FALSE; /* Are we in the upper mantle? */
+  const PetscBool isUpper = z < MOHO ? PETSC_TRUE : PETSC_FALSE; /* Are we in the upper mantle? */
   const PetscReal T       = DeltaT*T_nondim + 273.0;             /* Temperature K */
   const PetscReal dT_dr   = DeltaT*dT_dr_nondim/R_E;             /* Temperature gradient K/m */
   const PetscReal R       = 8.314459848e-3;                      /* Gas constant kJ/K mol */
