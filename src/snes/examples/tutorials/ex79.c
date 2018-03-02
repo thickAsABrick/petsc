@@ -58,6 +58,8 @@ typedef enum {NONE, BASIC, ANALYTIC_0, NUM_SOLUTION_TYPES} SolutionType;
 const char *solutionTypes[NUM_SOLUTION_TYPES+1] = {"none", "basic", "analytic_0", "unknown"};
 typedef enum {CONSTANT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
 const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
+typedef enum {FREE_SLIP, DIRICHLET, NUM_BC_TYPES} BCType;
+const char *bcTypes[NUM_BC_TYPES+1] = {"fee_slip", "dirichlet", "unknown"};
 
 typedef struct {
   PetscInt      debug;             /* The debugging level */
@@ -74,6 +76,7 @@ typedef struct {
   PetscSF       pointSF;           /* The SF describing mesh distribution */
   Vec           Tinit;             /* The initial, serial non-dimensional temperature distribution */
   /* Problem definition */
+  BCType        bcType;            /* The type of boundary conditions */
   RheologyType  muTypePre;         /* The type of rheology for the main problem */
   SolutionType  solTypePre;        /* The type of solution for the presolve */
   RheologyType  muType;            /* The type of rheology for the main problem */
@@ -1111,7 +1114,7 @@ static void stokes_identity_J_composite(PetscInt dim, PetscInt Nf, PetscInt NfAu
 
 static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 {
-  PetscInt       sol, mu;
+  PetscInt       bc, sol, mu;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
@@ -1121,6 +1124,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->coarsen         = 0;
   options->simplex         = PETSC_TRUE;
   options->showError       = PETSC_FALSE;
+  options->bcType          = FREE_SLIP;
   options->muTypePre       = CONSTANT;
   options->solTypePre      = NONE;
   options->muType          = CONSTANT;
@@ -1136,6 +1140,9 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   ierr = PetscOptionsInt("-refine", "Number of parallel uniform refinement steps", "ex69.c", options->refine, &options->refine, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsInt("-coarsen", "Number of parallel uniform coarsening steps", "ex69.c", options->coarsen, &options->coarsen, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex69.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
+  bc   = options->bcType;
+  ierr = PetscOptionsEList("-bc_type", "Type of boundary conditions", "ex69.c", bcTypes, NUM_BC_TYPES, bcTypes[options->bcType], &bc, NULL);CHKERRQ(ierr);
+  options->bcType = (BCType) bc;
   mu   = options->muTypePre;
   ierr = PetscOptionsEList("-mu_type_pre", "Type of rheology for the presolve", "ex69.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muTypePre], &mu, NULL);CHKERRQ(ierr);
   options->muTypePre = (RheologyType) mu;
@@ -1381,7 +1388,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   }
   if (!rank) {for (d = 0; d < 3; ++d) {ierr = PetscFree(axes[d]);CHKERRQ(ierr);}}
   /* Make split labels so that we can have corners in multiple labels */
-  {
+  if (user->bcType == FREE_SLIP) {
     const char *names[4] = {"markerBottom", "markerRight", "markerTop", "markerLeft"};
     PetscInt    ids[4]   = {1, 2, 3, 4};
     DMLabel     label;
@@ -1614,14 +1621,34 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
     break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solutionTypes[PetscMin(user->solType, NUM_SOLUTION_TYPES)]);
   }
-  comp = 1;
-  ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallB", "markerBottom", 0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
-  comp = 0;
-  ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallR", "markerRight",  0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
-  comp = 1;
-  ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallT", "markerTop",    0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
-  comp = 0;
-  ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallL", "markerLeft",   0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
+  ierr = PetscDSSetExactSolution(prob, 0, user->exactFuncs[0]);CHKERRQ(ierr);
+  ierr = PetscDSSetExactSolution(prob, 1, user->exactFuncs[1]);CHKERRQ(ierr);
+  /* Boundary conditions */
+  switch (user->bcType) {
+  case FREE_SLIP:
+    switch (dim) {
+    case 2:
+      comp = 1;
+      ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallB", "markerBottom", 0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
+      comp = 0;
+      ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallR", "markerRight",  0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
+      comp = 1;
+      ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallT", "markerTop",    0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
+      comp = 0;
+      ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wallL", "markerLeft",   0, 1, &comp, (void (*)(void)) user->exactFuncs[0], 1, &id, NULL);CHKERRQ(ierr);
+      break;
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No boundary condition %s for dimension %d", bcTypes[user->bcType], user->dim);
+    }
+    break;
+  case DIRICHLET:
+  {
+    const PetscInt ids[4] = {1, 2, 3, 4};
+
+    ierr = PetscDSAddBoundary(prob, DM_BC_ESSENTIAL, "wall", "marker", 0, 0, NULL, (void (*)(void)) user->exactFuncs[0], 4, ids, user);CHKERRQ(ierr);
+  }
+  break;
+  default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid boundary condition type %d (%s)", (PetscInt) user->bcType, bcTypes[PetscMin(user->bcType, NUM_BC_TYPES)]);
+  }
   /* Units */
   {
     /* TODO: Make these a bag */
