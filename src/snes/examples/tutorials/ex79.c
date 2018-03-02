@@ -56,8 +56,24 @@ Citcom input:
 
 typedef enum {NONE, BASIC, ANALYTIC_0, NUM_SOLUTION_TYPES} SolutionType;
 const char *solutionTypes[NUM_SOLUTION_TYPES+1] = {"none", "basic", "analytic_0", "unknown"};
-typedef enum {CONSTANT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
-const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
+typedef enum {CONSTANT, LINEAR_T, EXP_T, EXP_INVT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
+/*
+  constant:    mu = 1
+  linear_t:    mu = 2 - T
+  exp_t:       mu = 2 - exp(T)
+  exp_invt:    mu = 1 + exp(1/(1 + T))
+  test:        mu = 1/2 |u|^2
+  test2:       mu = 1/2 |u_x|^2_F
+  test3:       mu = eps_II
+  test4:       mu = eps^{(1-n)/n}_II
+  test5:       mu = mu_ds*mu_ds/mu0
+  test6:       mu = mu_df/(mu_ds + mu_df)
+  test7:       mu = broken
+  diffusion:   mu = mu_df
+  dislocation: mu = mu_ds
+  composite:   mu = 2.0*mu_df*mu_ds/(mu_df + mu_ds)
+ */
+const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "linear_t", "exp_t", "exp_invt", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
 typedef enum {FREE_SLIP, DIRICHLET, NUM_BC_TYPES} BCType;
 const char *bcTypes[NUM_BC_TYPES+1] = {"fee_slip", "dirichlet", "unknown"};
 
@@ -123,13 +139,7 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
 
   so that fx = 2mu - 1 and f_y = 2mu - 1.
 
-  For diffusion creep, we have to assume a temperature field. We will let the temperature and viscosity be be
-
-    T(y) = 1 - 0.5*y
-   mu(y) = A exp((E + Pl(y) V)/(nR (T(y) + T_ad(y))))
-  dmu/dy = mu ( (dPl/dy V)/(nR (T + T_ad)) - (dT/dy + dT_ad/dy) (E + Pl V)/(nR (T + T_ad))^2 )
-
-  and be careful to keep the domain entirely in the upper mantle. Now we have
+  If the viscosity is depth-dependent, we have
 
     -\nabla\cdot / 2 mu x  2 mu x \ + <1, 1> + f = 0
                  \ 2 mu x -2 mu x /
@@ -137,6 +147,23 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
     < -2 mu - 2 dmu/dy x,  -2 mu + 2 dmu/dy x > + <1, 1> + f = 0
 
   so that f = <2 mu + 2 dmu/dy x - 1, 2 mu - 2 dmu/dy x - 1>
+
+  For Arrenhius behavior, we have to assume a temperature field. We will let the temperature be
+
+    T(y) = 1 - gamma y
+    dT/y = -gamma
+
+  For linear rheology, we will have
+
+    mu(y)  = 2 - T = 2 - (1 - gamma y) = 1 + gamma y
+    dmu/dy = gamma
+
+  For diffusion creep, the viscosity will be
+
+   mu(y) = A exp((E + Pl(y) V)/(nR (T(y) + T_ad(y))))
+  dmu/dy = mu ( (dPl/dy V)/(nR (T + T_ad)) - (dT/dy + dT_ad/dy) (E + Pl V)/(nR (T + T_ad))^2 )
+
+  and be careful to keep the domain entirely in the lower mantle.
 
 */
 PetscErrorCode analytic_2d_0_u(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
@@ -503,6 +530,51 @@ static void analytic_2d_0_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   f0[1] = 2.*mu - 1.;
 }
 
+static void analytic_2d_0_linear_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  PetscReal T, dT_dr, mu, dmu_dr;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  analytic_2d_0_dT_dr(dim, t, x, Nf, &dT_dr, NULL);
+  mu     = 2.0 - T;
+  dmu_dr = - dT_dr;
+  f0[0]  = 2.*mu + 2.*dmu_dr*x[0] - 1.;
+  f0[1]  = 2.*mu - 2.*dmu_dr*x[0] - 1.;
+}
+
+static void analytic_2d_0_exp_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  PetscReal T, dT_dr, mu, dmu_dr;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  analytic_2d_0_dT_dr(dim, t, x, Nf, &dT_dr, NULL);
+  mu     = 2.0 - PetscExpReal(T);
+  dmu_dr = -dT_dr*PetscExpReal(T);
+  f0[0]  = 2.*mu + 2.*dmu_dr*x[0] - 1.;
+  f0[1]  = 2.*mu - 2.*dmu_dr*x[0] - 1.;
+}
+
+static void analytic_2d_0_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  PetscReal T, dT_dr, mu, dmu_dr;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  analytic_2d_0_dT_dr(dim, t, x, Nf, &dT_dr, NULL);
+  mu     = 1.0 + PetscExpReal(1.0/(1.0 + T));
+  dmu_dr = -(dT_dr/(1.0 + T))*PetscExpReal(1.0/(1.0 + T));
+  f0[0]  = 2.*mu + 2.*dmu_dr*x[0] - 1.;
+  f0[1]  = 2.*mu - 2.*dmu_dr*x[0] - 1.;
+}
+
 static void analytic_2d_0_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
@@ -534,6 +606,57 @@ static void stokes_momentum_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
       f1[c*dim+d] = 0.5*(u_x[c*dim+d] + u_x[d*dim+c]);
+    }
+    f1[c*dim+c] -= u[dim];
+  }
+}
+static void stokes_momentum_linear_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+{
+  PetscReal T, mu;
+  PetscInt  c, d;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - T;
+  for (c = 0; c < dim; ++c) {
+    for (d = 0; d < dim; ++d) {
+      f1[c*dim+d] = 0.5*mu * (u_x[c*dim+d] + u_x[d*dim+c]);
+    }
+    f1[c*dim+c] -= u[dim];
+  }
+}
+static void stokes_momentum_exp_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+{
+  PetscReal T, mu;
+  PetscInt  c, d;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - PetscExpReal(T);
+  for (c = 0; c < dim; ++c) {
+    for (d = 0; d < dim; ++d) {
+      f1[c*dim+d] = 0.5*mu * (u_x[c*dim+d] + u_x[d*dim+c]);
+    }
+    f1[c*dim+c] -= u[dim];
+  }
+}
+static void stokes_momentum_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+{
+  PetscReal T, mu;
+  PetscInt  c, d;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 1.0 + PetscExpReal(1.0/(1.0 + T));
+  for (c = 0; c < dim; ++c) {
+    for (d = 0; d < dim; ++d) {
+      f1[c*dim+d] = 0.5*mu * (u_x[c*dim+d] + u_x[d*dim+c]);
     }
     f1[c*dim+c] -= u[dim];
   }
@@ -842,6 +965,57 @@ static void stokes_momentum_vel_J_constant(PetscInt dim, PetscInt Nf, PetscInt N
     for (df = 0; df < dim; ++df) {
       g3[((fc*dim+fc)*dim+df)*dim+df] += 0.5; /*g3[fc, fc, df, df]*/
       g3[((fc*dim+df)*dim+df)*dim+fc] += 0.5; /*g3[fc, df, df, fc]*/
+    }
+  }
+}
+static void stokes_momentum_vel_J_linear_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                           const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                           const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                           PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+{
+  PetscReal T, mu;
+  PetscInt  fc, df;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - T;
+  for (fc = 0; fc < dim; ++fc) {
+    for (df = 0; df < dim; ++df) {
+      g3[((fc*dim+fc)*dim+df)*dim+df] += 0.5*mu; /*g3[fc, fc, df, df]*/
+      g3[((fc*dim+df)*dim+df)*dim+fc] += 0.5*mu; /*g3[fc, df, df, fc]*/
+    }
+  }
+}
+static void stokes_momentum_vel_J_exp_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+{
+  PetscReal T, mu;
+  PetscInt  fc, df;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - PetscExpReal(T);
+  for (fc = 0; fc < dim; ++fc) {
+    for (df = 0; df < dim; ++df) {
+      g3[((fc*dim+fc)*dim+df)*dim+df] += 0.5*mu; /*g3[fc, fc, df, df]*/
+      g3[((fc*dim+df)*dim+df)*dim+fc] += 0.5*mu; /*g3[fc, df, df, fc]*/
+    }
+  }
+}
+static void stokes_momentum_vel_J_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                           const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                           const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                           PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+{
+  PetscReal T, mu;
+  PetscInt  fc, df;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 1.0 + PetscExpReal(1.0/(1.0 + T));
+  for (fc = 0; fc < dim; ++fc) {
+    for (df = 0; df < dim; ++df) {
+      g3[((fc*dim+fc)*dim+df)*dim+df] += 0.5*mu; /*g3[fc, fc, df, df]*/
+      g3[((fc*dim+df)*dim+df)*dim+fc] += 0.5*mu; /*g3[fc, df, df, fc]*/
     }
   }
 }
@@ -1167,6 +1341,39 @@ static void stokes_identity_J_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux
                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
   g0[0] = 1.0;
+}
+static void stokes_identity_J_linear_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                       const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                       const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                       PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
+{
+  PetscReal T, mu;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - T;
+  g0[0] = 1.0/mu;
+}
+static void stokes_identity_J_exp_t(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                    const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                    const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                    PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
+{
+  PetscReal T, mu;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 2.0 - PetscExpReal(T);
+  g0[0] = 1.0/mu;
+}
+static void stokes_identity_J_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                       const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                       const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                       PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
+{
+  PetscReal T, mu;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = 1.0 + PetscExpReal(1.0/(1.0 + T));
+  g0[0] = 1.0/mu;
 }
 static void stokes_identity_J_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                    const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
@@ -1679,6 +1886,39 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
         ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
         ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
         ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
+        break;
+      case LINEAR_T:
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_linear_t, stokes_momentum_linear_t);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_linear_t);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_linear_t);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_linear_t, NULL, NULL, NULL);CHKERRQ(ierr);
+        break;
+      case EXP_T:
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_exp_t, stokes_momentum_exp_t);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_exp_t);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_exp_t);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_exp_t, NULL, NULL, NULL);CHKERRQ(ierr);
+        break;
+      case EXP_INVT:
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_exp_invt, stokes_momentum_exp_invt);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_exp_invt);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_exp_invt);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_exp_invt, NULL, NULL, NULL);CHKERRQ(ierr);
         break;
       case DIFFUSION:
         ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_diffusion, stokes_momentum_analytic_diffusion);CHKERRQ(ierr);
