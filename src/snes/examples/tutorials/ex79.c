@@ -184,7 +184,11 @@ static PetscScalar LithostaticPressure(PetscInt dim, const PetscReal x[], PetscR
   const PetscReal  z   = R_E*(1. - r); /* Depth m */
   const PetscReal  P_l = (-1./(1000.*beta))*log(1.-rho0*g*beta*z);   /* Lithostatic pressure kPa = kJ/m^3 */
 
+#ifdef SIMPLIFY
+  return (-1./(1000.*beta))*log(1.-rho0*g*beta*R_E*(1. - 0.7));
+#else
   return P_l;
+#endif
 }
 
 /* We get the derivative with respect to the dimensional coordinate z, not the non-dimensional one */
@@ -198,7 +202,11 @@ static PetscScalar LithostaticPressureDerivativeR(PetscInt dim, const PetscReal 
 #endif
   const PetscReal  z   = R_E*(1. - r); /* Depth m */
 
+#ifdef SIMPLIFY
+  return 0.0;
+#else
   return -rho0*g*beta/(1000.*beta*(1.-rho0*g*beta*z));
+#endif
 }
 
 /* Assume 10 Pa/m gradient */
@@ -284,7 +292,13 @@ static PetscReal SecondInvariantStress(PetscInt dim, const PetscScalar u_x[])
   return SecondInvariantSymmetric(dim, epsilon);
 }
 
+/* The division between upper and lower mantle, depth in m */
+#ifdef SIMPLIFY
+#define MOHO 0.0*1000.0
+#else
 #define MOHO 670.0*1000.0
+#endif
+
 /* Assumes that u_x[], x[], and T are dimensionless */
 static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
 {
@@ -350,7 +364,11 @@ static PetscReal DiffusionCreepViscosity(PetscInt dim, const PetscScalar u_x[], 
   mu = mu_df;
   //if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
   //if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
+#ifdef SIMPLIFY
+  return mu;
+#else
   return PetscMin(mu_max, PetscMax(mu_min, mu));
+#endif
 }
 static void DiffusionCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
@@ -1765,7 +1783,11 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
     constants[4] = rho0;
     constants[5] = beta;
     constants[6] = alpha;
+#ifdef SIMPLIFY
+    constants[7] = 0.0;
+#else
     constants[7] = dT_ad_dr;
+#endif
     constants[8] = 1.0;
 
     Ra   = (rho0*g*alpha*DeltaT*PetscPowRealInt(R_E, 3))/(mu0*kappa);
