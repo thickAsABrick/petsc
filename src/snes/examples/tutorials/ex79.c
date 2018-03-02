@@ -82,6 +82,7 @@ typedef struct {
   RheologyType  muType;            /* The type of rheology for the main problem */
   SolutionType  solType;           /* The type of solution for the main solve */
   PetscErrorCode (**exactFuncs)(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar u[], void *ctx);
+  PetscErrorCode (**initialGuess)(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx);
 } AppCtx;
 
 static PetscErrorCode zero_scalar(PetscInt dim, PetscReal time, const PetscReal coords[], PetscInt Nf, PetscScalar *u, void *ctx)
@@ -106,7 +107,7 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
 
     u = x^2 + y^2
     v = 2 x^2 - 2xy
-    p = x + y - 1
+    p = x + y - 1 over [0, 1/2] x [1/2, 1]
 
   so that
 
@@ -118,15 +119,15 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
     -\nabla\cdot mu / / 2x  4x-2y \ + /   2x   2y \  \ + <1 , 1> + f = 0
                  2  \ \ 2y   -2x  /   \ 4x-2y -2x /  /
     mu / -2 \ + <1, 1> + f = 0
-       \ -4 /
+       \ -2 /
 
-  so that fx = 2mu - 1 and f_y = 4mu - 1.
+  so that fx = 2mu - 1 and f_y = 2mu - 1.
 
   For diffusion creep, we have to assume a temperature field. We will let the temperature and viscosity be be
 
-    T(y) = 1 - y
-   mu(y) = A exp((E + Pl(y) V)/(nR (T(y) + Tad(y))))
-  dmu/dy = mu ( (dPl/dy V)/(nR (T + T_ad)) - (dT/dy + dTad/dy) (E + Pl V)/(nR (T + T_ad))^2
+    T(y) = 1 - 0.5*y
+   mu(y) = A exp((E + Pl(y) V)/(nR (T(y) + T_ad(y))))
+  dmu/dy = mu ( (dPl/dy V)/(nR (T + T_ad)) - (dT/dy + dT_ad/dy) (E + Pl V)/(nR (T + T_ad))^2 )
 
   and be careful to keep the domain entirely in the upper mantle. Now we have
 
@@ -138,16 +139,36 @@ static PetscErrorCode zero_vector(PetscInt dim, PetscReal time, const PetscReal 
   so that f = <2 mu + 2 dmu/dy x - 1, 2 mu - 2 dmu/dy x - 1>
 
 */
-PetscErrorCode analytic_u_2d_0(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
+PetscErrorCode analytic_2d_0_u(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
   u[0] = x[0]*x[0] + x[1]*x[1];
   u[1] = 2.0*x[0]*x[0] - 2.0*x[0]*x[1];
   return 0;
 }
 
-PetscErrorCode analytic_p_2d_0(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *p, void *ctx)
+PetscErrorCode analytic_2d_0_p(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *p, void *ctx)
 {
   *p = x[0] + x[1] - 1.0;
+  return 0;
+}
+
+PetscErrorCode analytic_2d_0_T(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *T, void *ctx)
+{
+#ifdef SIMPLIFY
+  *T = 1. - 0.0*x[dim-1];
+#else
+  *T = 1. - 0.3*x[dim-1];
+#endif
+  return 0;
+}
+
+PetscErrorCode analytic_2d_0_dT_dr(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *dT, void *ctx)
+{
+#ifdef SIMPLIFY
+  *dT = -0.0;
+#else
+  *dT = -0.3;
+#endif
   return 0;
 }
 
@@ -1604,19 +1625,24 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
 
   PetscFunctionBeginUser;
   ierr = SetupEquations(prob, dim, user->muType, user->solType);CHKERRQ(ierr);
+  /* Exact solutions */
   switch (user->solType) {
   case NONE:
   case BASIC:
-    user->exactFuncs[0] = zero_vector;
-    user->exactFuncs[1] = zero_scalar;
+    user->exactFuncs[0]   = zero_vector;
+    user->exactFuncs[1]   = zero_scalar;
+    user->initialGuess[0] = zero_vector;
+    user->initialGuess[1] = dynamic_pressure;
     break;
   case ANALYTIC_0:
     switch (user->dim) {
     case 2:
-      user->exactFuncs[0] = analytic_u_2d_0;
-      user->exactFuncs[1] = analytic_p_2d_0;
+      user->exactFuncs[0]   = analytic_2d_0_u;
+      user->exactFuncs[1]   = analytic_2d_0_p;
+      user->initialGuess[0] = zero_vector;
+      user->initialGuess[1] = zero_scalar;
       break;
-    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", user->dim, solutionTypes[user->solType]);
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", solutionTypes[user->solType], user->dim);
     }
     break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) user->solType, solutionTypes[PetscMin(user->solType, NUM_SOLUTION_TYPES)]);
@@ -1868,24 +1894,23 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
 
 int main(int argc, char **argv)
 {
-  SNES            snes;                 /* nonlinear solver */
-  DM              dm;                   /* mesh and discretization */
-  PetscDS         prob;                 /* problem definition */
-  Vec             u,r;                  /* solution, residual vectors */
-  Mat             J, M;                 /* Jacobian matrix */
-  MatNullSpace    nullSpace;            /* May be necessary for pressure */
-  Vec             nullVec;
-  PetscScalar     pint;
-  AppCtx          user;                 /* user-defined work context */
-  PetscReal       error = 0.0;          /* L_2 error in the solution */
-  PetscReal       ferrors[2];
-  PetscErrorCode  (*initialGuess[2])(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx) = {zero_vector, dynamic_pressure};
-  void            *ctxs[2] = {NULL, NULL};
-  PetscErrorCode  ierr;
+  SNES           snes;                 /* nonlinear solver */
+  DM             dm;                   /* mesh and discretization */
+  PetscDS        prob;                 /* problem definition */
+  Vec            u,r;                  /* solution, residual vectors */
+  Mat            J, M;                 /* Jacobian matrix */
+  MatNullSpace   nullSpace;            /* May be necessary for pressure */
+  Vec            nullVec;
+  PetscScalar    pint;
+  AppCtx         user;                 /* user-defined work context */
+  PetscReal      error = 0.0;          /* L_2 error in the solution */
+  PetscReal      ferrors[2];
+  void          *ctxs[2] = {NULL, NULL};
+  PetscErrorCode ierr;
 
   ierr = PetscInitialize(&argc, &argv, NULL,help);if (ierr) return ierr;
   ierr = ProcessOptions(PETSC_COMM_WORLD, &user);CHKERRQ(ierr);
-  ierr = PetscMalloc(2 * sizeof(void (*)(const PetscReal[], PetscScalar *, void *)), &user.exactFuncs);CHKERRQ(ierr);
+  ierr = PetscMalloc2(2, &user.exactFuncs, 2, &user.initialGuess);CHKERRQ(ierr);
   ierr = CreateMesh(PETSC_COMM_WORLD, &user, &dm);CHKERRQ(ierr);
   ierr = SetupDiscretization(PETSC_COMM_WORLD, &prob, &user);CHKERRQ(ierr);
   ierr = DistributeTemperature(dm, &user);CHKERRQ(ierr);
@@ -1918,7 +1943,7 @@ int main(int argc, char **argv)
   ierr = PetscPrintf(PETSC_COMM_WORLD, "Integral of pressure for exact solution: %g\n",(double) (PetscAbsScalar(pint) < 1.0e-14 ? 0.0 : PetscRealPart(pint)));CHKERRQ(ierr);
   ierr = DMSNESCheckFromOptions(snes, u, user.exactFuncs, ctxs);CHKERRQ(ierr);
   /* Make initial guess */
-  ierr = DMProjectFunction(dm, 0.0, initialGuess, ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
+  ierr = DMProjectFunction(dm, 0.0, user.initialGuess, ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
   ierr = MatNullSpaceRemove(nullSpace, u);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
   ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
@@ -1960,7 +1985,7 @@ int main(int argc, char **argv)
   ierr = VecDestroy(&r);CHKERRQ(ierr);
   ierr = SNESDestroy(&snes);CHKERRQ(ierr);
   ierr = DMDestroy(&dm);CHKERRQ(ierr);
-  ierr = PetscFree(user.exactFuncs);CHKERRQ(ierr);
+  ierr = PetscFree2(user.exactFuncs, user.initialGuess);CHKERRQ(ierr);
   ierr = PetscFinalize();
   return ierr;
 }
