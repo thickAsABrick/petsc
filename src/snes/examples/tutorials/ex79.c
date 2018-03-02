@@ -79,6 +79,7 @@ const char *bcTypes[NUM_BC_TYPES+1] = {"fee_slip", "dirichlet", "unknown"};
 
 typedef struct {
   PetscInt      debug;             /* The debugging level */
+  PetscBool     byte_swap;         /* Flag to byte swap on temperature input */
   PetscBool     showError;
   /* Domain and mesh definition */
   PetscInt      dim;               /* The topological mesh dimension */
@@ -1431,11 +1432,12 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 
   PetscFunctionBeginUser;
   options->debug           = 0;
+  options->showError       = PETSC_FALSE;
+  options->byte_swap       = PETSC_TRUE;
   options->dim             = 2;
   options->refine          = 0;
   options->coarsen         = 0;
   options->simplex         = PETSC_TRUE;
-  options->showError       = PETSC_FALSE;
   options->bcType          = FREE_SLIP;
   options->muTypePre       = CONSTANT;
   options->solTypePre      = NONE;
@@ -1446,28 +1448,29 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->Tinit           = NULL;
 
   ierr = PetscOptionsBegin(comm, "", "Variable-Viscosity Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-debug", "The debugging level", "ex69.c", options->debug, &options->debug, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-dim", "The topological mesh dimension", "ex69.c", options->dim, &options->dim, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsBool("-simplex", "Use simplices or tensor product cells", "ex69.c", options->simplex, &options->simplex, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-refine", "Number of parallel uniform refinement steps", "ex69.c", options->refine, &options->refine, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsInt("-coarsen", "Number of parallel uniform coarsening steps", "ex69.c", options->coarsen, &options->coarsen, NULL);CHKERRQ(ierr);
-  ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex69.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-debug", "The debugging level", "ex79.c", options->debug, &options->debug, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex79.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-byte_swap", "Flag to swap bytes on input", "ex79.c", options->byte_swap, &options->byte_swap, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-dim", "The topological mesh dimension", "ex79.c", options->dim, &options->dim, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-simplex", "Use simplices or tensor product cells", "ex79.c", options->simplex, &options->simplex, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-refine", "Number of parallel uniform refinement steps", "ex79.c", options->refine, &options->refine, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsInt("-coarsen", "Number of parallel uniform coarsening steps", "ex79.c", options->coarsen, &options->coarsen, NULL);CHKERRQ(ierr);
   bc   = options->bcType;
-  ierr = PetscOptionsEList("-bc_type", "Type of boundary conditions", "ex69.c", bcTypes, NUM_BC_TYPES, bcTypes[options->bcType], &bc, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-bc_type", "Type of boundary conditions", "ex79.c", bcTypes, NUM_BC_TYPES, bcTypes[options->bcType], &bc, NULL);CHKERRQ(ierr);
   options->bcType = (BCType) bc;
   mu   = options->muTypePre;
-  ierr = PetscOptionsEList("-mu_type_pre", "Type of rheology for the presolve", "ex69.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muTypePre], &mu, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-mu_type_pre", "Type of rheology for the presolve", "ex79.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muTypePre], &mu, NULL);CHKERRQ(ierr);
   options->muTypePre = (RheologyType) mu;
   mu   = options->muType;
-  ierr = PetscOptionsEList("-mu_type", "Type of rheology", "ex69.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muType], &mu, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-mu_type", "Type of rheology", "ex79.c", rheologyTypes, NUM_RHEOLOGY_TYPES, rheologyTypes[options->muType], &mu, NULL);CHKERRQ(ierr);
   options->muType = (RheologyType) mu;
   sol  = options->solTypePre;
-  ierr = PetscOptionsEList("-sol_type_pre", "Type of problem for presolve", "ex69.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solTypePre], &sol, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-sol_type_pre", "Type of problem for presolve", "ex79.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solTypePre], &sol, NULL);CHKERRQ(ierr);
   options->solTypePre = (SolutionType) sol;
   sol  = options->solType;
-  ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex69.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex79.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
   options->solType = (SolutionType) sol;
-  ierr = PetscOptionsString("-mantle_basename", "The basename for mantle files", "ex69.c", options->mantleBasename, options->mantleBasename, sizeof(options->mantleBasename), NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsString("-mantle_basename", "The basename for mantle files", "ex79.c", options->mantleBasename, options->mantleBasename, sizeof(options->mantleBasename), NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
   PetscFunctionReturn(0);
 }
@@ -1534,12 +1537,11 @@ static PetscErrorCode CreateInitialTemperature(DM dm, AppCtx *user)
   ierr = DMGetDefaultSection(tdm, &tsec);CHKERRQ(ierr);
   ierr = VecGetArray(Ts, &T);CHKERRQ(ierr);
   if (!rank) {
-    PetscInt  Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]], vStart, vx, vy, vz, count;
-    PetscBool byteswap = PETSC_TRUE;
-    char      filename[PETSC_MAX_PATH_LEN];
-    float    *temp;
+    PetscInt Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]];
+    PetscInt vStart, vx, vy, vz, count;
+    char     filename[PETSC_MAX_PATH_LEN];
+    float   *temp;
 
-    ierr = PetscOptionsGetBool(NULL, NULL, "-byte_swap", &byteswap, NULL);CHKERRQ(ierr);
     ierr = PetscStrcpy(filename, user->mantleBasename);CHKERRQ(ierr);
     ierr = PetscStrcat(filename, "_therm.bin");CHKERRQ(ierr);
     ierr = PetscViewerCreate(PETSC_COMM_SELF, &viewer);CHKERRQ(ierr);
@@ -1553,8 +1555,7 @@ static PetscErrorCode CreateInitialTemperature(DM dm, AppCtx *user)
       for (vx = 0; vx < Nx; ++vx) {
         ierr = PetscViewerRead(viewer, temp, Nz, &count, PETSC_FLOAT);CHKERRQ(ierr);
         if (count != Nz) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Mantle temperature file %s had incorrect length", filename);
-        /* They are written little endian, so I need to swap back (mostly) */
-        if (byteswap) {ierr = PetscByteSwap(temp, PETSC_FLOAT, count);CHKERRQ(ierr);}
+        if (user->byte_swap) {ierr = PetscByteSwap(temp, PETSC_FLOAT, count);CHKERRQ(ierr);}
         for (vz = 0; vz < Nz; ++vz) {
           PetscInt off;
 
