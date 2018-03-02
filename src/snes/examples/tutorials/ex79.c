@@ -695,6 +695,23 @@ static void stokes_momentum_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
     f1[c*dim+c] -= u[dim];
   }
 }
+static void stokes_momentum_analytic_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                               const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                               const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                               PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+{
+  PetscReal T, mu;
+  PetscInt  c, d;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  for (c = 0; c < dim; ++c) {
+    for (d = 0; d < dim; ++d) {
+      f1[c*dim+d] = 0.5*mu * (u_x[c*dim+d] + u_x[d*dim+c]);
+    }
+    f1[c*dim+c] -= u[dim];
+  }
+}
 static void stokes_momentum_dislocation(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                         const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
@@ -801,12 +818,12 @@ static void stokes_momentum_vel_J_constant(PetscInt dim, PetscInt Nf, PetscInt N
                                            const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                            PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  PetscInt cI, d;
+  PetscInt fc, df;
 
-  for (cI = 0; cI < dim; ++cI) {
-    for (d = 0; d < dim; ++d) {
-      g3[((cI*dim+cI)*dim+d)*dim+d] += 0.5; /*g3[cI, cI, d, d]*/
-      g3[((cI*dim+d)*dim+d)*dim+cI] += 0.5; /*g3[cI, d, d, cI]*/
+  for (fc = 0; fc < dim; ++fc) {
+    for (df = 0; df < dim; ++df) {
+      g3[((fc*dim+fc)*dim+df)*dim+df] += 0.5; /*g3[fc, fc, df, df]*/
+      g3[((fc*dim+df)*dim+df)*dim+fc] += 0.5; /*g3[fc, df, df, fc]*/
     }
   }
 }
@@ -1036,6 +1053,23 @@ static void stokes_momentum_vel_J_diffusion(PetscInt dim, PetscInt Nf, PetscInt 
     }
   }
 }
+static void stokes_momentum_vel_J_analytic_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                                     PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+{
+  PetscReal T, mu;
+  PetscInt  cI, d;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  for (cI = 0; cI < dim; ++cI) {
+    for (d = 0; d < dim; ++d) {
+      g3[((cI*dim+cI)*dim+d)*dim+d] += 0.5*mu; /*g3[cI, cI, d, d]*/
+      g3[((cI*dim+d)*dim+d)*dim+cI] += 0.5*mu; /*g3[cI, d, d, cI]*/
+    }
+  }
+}
 static void stokes_momentum_vel_J_dislocation(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                               const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                                               const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
@@ -1131,6 +1165,17 @@ static void stokes_identity_J_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAu
   const PetscReal T  = PetscRealPart(a[0]);
   const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
 
+  g0[0] = 1.0/mu;
+}
+static void stokes_identity_J_analytic_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                                 PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
+{
+  PetscReal T, mu;
+
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
   g0[0] = 1.0/mu;
 }
 static void stokes_identity_J_dislocation(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -1618,19 +1663,20 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
         ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
         break;
       case DIFFUSION:
-        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_diffusion, stokes_momentum_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetResidual(prob, 0, analytic_2d_0_diffusion, stokes_momentum_analytic_diffusion);CHKERRQ(ierr);
         ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL,  NULL,  stokes_momentum_vel_J_analytic_diffusion);CHKERRQ(ierr);
         ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL,  stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
         ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_diffusion);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_analytic_diffusion);CHKERRQ(ierr);
         ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
         ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_diffusion, NULL, NULL, NULL);CHKERRQ(ierr);
+        ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_analytic_diffusion, NULL, NULL, NULL);CHKERRQ(ierr);
         break;
       default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid rheology type %d (%s)", (PetscInt) muType, rheologyTypes[PetscMin(muType, NUM_RHEOLOGY_TYPES)]);
       }
-    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", dim, solutionTypes[solType]);
+      break;
+    default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No solution %s for dimension %d", solutionTypes[solType], dim);
     }
     break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid solution type %d (%s)", (PetscInt) solType, solutionTypes[PetscMin(solType, NUM_SOLUTION_TYPES)]);
@@ -2049,6 +2095,18 @@ int main(int argc, char **argv)
     suffix: small_ref_q1p0_composite
     requires: broken
     args: -sol_type composite -simplex 0 -refine 1 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+
+  test:
+    suffix: small_q1p0_analytic_0
+    args: -sol_type analytic_0 -mu_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -bc_type dirichlet -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8 -refine 1 -snes_convergence_estimate
+
+  test:
+    suffix: small_q2q1_analytic_0
+    args: -sol_type analytic_0 -mu_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -bc_type dirichlet -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8 -refine 1 -snes_convergence_estimate
+
+  test:
+    suffix: small_q1p0_diffusion_analytic_0
+    args: -sol_type analytic_0 -mu_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -bc_type dirichlet -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8 -refine 1 -snes_convergence_estimate
 
   test:
     suffix: small_q2q1_constant
