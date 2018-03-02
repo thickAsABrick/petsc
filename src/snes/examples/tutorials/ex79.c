@@ -215,7 +215,7 @@ static PetscErrorCode dynamic_pressure(PetscInt dim, PetscReal time, const Petsc
 #endif
   const PetscReal    z         = R_E*r;        /* Height m */
   const PetscReal    gradP     = 905.0;        /* Pressure gradient in Pa/m, should be rho0*g*alpha*DeltaT, I get 905 */
-  const PetscReal    P_d       = constants[6] * gradP*z;
+  const PetscReal    P_d       = constants[8] * gradP*z;
 
   /*
    Pa/m = kg /m^2 s^2
@@ -285,7 +285,7 @@ static PetscReal SecondInvariantStress(PetscInt dim, const PetscScalar u_x[])
 }
 
 /* Assumes that u_x[], x[], and T are dimensionless */
-static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
+static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
 {
 #ifdef SPHERICAL
   const PetscReal r       = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
@@ -307,7 +307,7 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
   const PetscReal V_df_lm = 1.5e-6;                              /* Activation volume in the upper mantle, m^3/mol */
   const PetscReal V_ds    = 11e-6;                               /* Activation volume, m^3/mol */
   const PetscReal P_l     = LithostaticPressure(dim, x, R_E, rho0, beta); /* Lithostatic pressure, Pa */
-  const PetscReal T_ad    = (3.e-4)*z;                           /* Adiabatic temperature, K with gradient of 3e-4 K/m */
+  const PetscReal T_ad    = -dT_ad_dr*z;                         /* Adiabatic temperature, K */
   const PetscReal eps_II  = SecondInvariantStress(dim, u_x)*(kappa/PetscSqr(R_E)); /* Second invariant of strain rate, 1/s */
   const PetscReal A_df    = 1.0;                                 /* mum^3 / Pa^n s */
   const PetscReal A_ds    = 9.0e-20;                             /* 1 / Pa^n s */
@@ -323,6 +323,8 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
   *epsilon_II = eps_II;
   *mu_df = pre_df * mid_df * post_df;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
   *mu_ds = eps_II <= 0.0 ? 5e24 : pre_ds * mid_ds * post_ds;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
+  //PetscPrintf(PETSC_COMM_SELF, "Diffusion mu %g  %s pre: %g mid: %g post: %g T: %g Depth: %g Num: %g Denom: %g\n", *mu_df, isUpper ? "Upper": "Lower",
+  //            pre_df, mid_df, post_df, T, z, isUpper ? E_df + P_l * V_df_um : E_df + P_l * V_df_lm, n_df * R * (T + T_ad));
 #if 0
   if (*mu_df < 1.e9) PetscPrintf(PETSC_COMM_SELF, "Diffusion   pre: %g mid: %g post: %g T: %g Num: %g Denom: %g\n", pre_df, mid_df, post_df, T, E_df + P_l * V_df, n_df * R * (T + T_ad));
   if (*mu_ds < 1.e9) PetscPrintf(PETSC_COMM_SELF, "Dislocation pre: %g mid: %g post: %g T: %g z: %g\n", pre_ds, mid_ds, post_ds, T, z);
@@ -332,17 +334,18 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
 
 static PetscReal DiffusionCreepViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max  = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min  = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E     = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa   = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT  = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0    = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta    = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  PetscReal       eps_II;                 /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;       /* Pa s = kg/(m s) */
+  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_df;
   //if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
   //if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
@@ -358,17 +361,18 @@ static void DiffusionCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
 static PetscReal DislocationCreepViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max  = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min  = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E     = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa   = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT  = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0    = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta    = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  PetscReal       eps_II;                 /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;       /* Pa s = kg/(m s) */
+  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_ds;
   //if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
   if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
@@ -385,17 +389,18 @@ static void DislocationCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAu
 
 static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max  = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min  = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E     = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa   = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT  = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0    = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta    = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  PetscReal       eps_II;                 /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;       /* Pa s = kg/(m s) */
+  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = 2.0*mu_ds*mu_df/(mu_ds + mu_df);
   //PetscPrintf(PETSC_COMM_SELF, "Composite mu %g mu_df %g mu_ds %g, eps_II %g T %g\n", mu, mu_df, mu_ds, eps_II, T);
   //if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
@@ -412,7 +417,7 @@ static void CompositeViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 }
 
 /* Assumes that u_x[], x[], and T are dimensionless */
-static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal T_nondim, PetscReal dT_dr_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds, PetscReal *dmu_df_dr)
+static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal dT_dr_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds, PetscReal *dmu_df_dr)
 {
 #ifdef SPHERICAL
   const PetscReal r       = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
@@ -436,8 +441,7 @@ static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], co
   const PetscReal V_ds    = 11e-6;                               /* Activation volume, m^3/mol */
   const PetscReal P_l     = LithostaticPressure(dim, x, R_E, rho0, beta); /* Lithostatic pressure, Pa */
   const PetscReal dP_l_dr = LithostaticPressureDerivativeR(dim, x, R_E, rho0, beta); /* Lithostatic pressure derivative, Pa/m */
-  const PetscReal T_ad    = (3.e-4)*z;                           /* Adiabatic temperature, K with gradient of 3e-4 K/m */
-  const PetscReal dT_ad_dr= -3.e-4;                              /* Adiabatic temperature gradient, K/m */
+  const PetscReal T_ad    = -dT_ad_dr*z;                         /* Adiabatic temperature, K */
   const PetscReal eps_II  = SecondInvariantStress(dim, u_x)*(kappa/PetscSqr(R_E)); /* Second invariant of strain rate, 1/s */
   const PetscReal A_df    = 1.0;                                 /* mum^3 / Pa^n s */
   const PetscReal A_ds    = 9.0e-20;                             /* 1 / Pa^n s */
@@ -449,7 +453,6 @@ static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], co
   const PetscReal post_df = isUpper ? PetscExpReal((E_df + P_l * V_df_um)/(n_df * R * (T + T_ad)))
                                     : PetscExpReal((E_df + P_l * V_df_lm)/(n_df * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
   const PetscReal post_ds = PetscExpReal((E_ds + P_l * V_ds)/(n_ds * R * (T + T_ad))); /* Dimensionless, (kJ/mol) / (kJ/mol) */
-  PetscReal       der_df  = 0.0; /* Dimensionless, (kJ/mol) / (kJ/mol) */
 
   *epsilon_II = eps_II;
   *mu_df = pre_df * mid_df * post_df;   /* Pa s^{1/n} s^{(n-1)/n} = Pa s */
@@ -459,6 +462,9 @@ static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], co
     *dmu_df_dr += *mu_df * ((dP_l_dr * V_df_um)/(n_df * R * (T + T_ad)));
     *dmu_df_dr -= *mu_df * ((dT_dr + dT_ad_dr)*(E_df + P_l * V_df_um)/PetscSqr(n_df * R * (T + T_ad)));
   } else {
+    *dmu_df_dr  = 0.0;
+    *dmu_df_dr += *mu_df * ((dP_l_dr * V_df_lm)/(n_df * R * (T + T_ad)));
+    *dmu_df_dr -= *mu_df * ((dT_dr + dT_ad_dr)*(E_df + P_l * V_df_lm)/PetscSqr(n_df * R * (T + T_ad)));
   }
 #if 0
   if (*mu_df < 1.e9) PetscPrintf(PETSC_COMM_SELF, "Diffusion   pre: %g mid: %g post: %g T: %g Num: %g Denom: %g\n", pre_df, mid_df, post_df, T, E_df + P_l * V_df, n_df * R * (T + T_ad));
@@ -475,7 +481,7 @@ static void analytic_2d_0_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
   const PetscReal mu = 1.0;
 
   f0[0] = 2.*mu - 1.;
-  f0[1] = 4.*mu - 1.;
+  f0[1] = 2.*mu - 1.;
 }
 
 static void analytic_2d_0_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -483,18 +489,20 @@ static void analytic_2d_0_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
-  const PetscReal R_E     = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa   = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT  = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0    = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta    = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  const PetscReal T       = 1. - x[dim-1];
-  const PetscReal dT_dr   = 1. - x[dim-1];
-  PetscReal       eps_II, mu_df, mu_ds, dmu_df_dr;
+  const PetscReal mu0      = constants[0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
+  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  PetscReal       T, dT_dr, eps_II, mu_df, mu_ds, dmu_df_dr;
 
-  MantleViscosityDerivativeR(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, dT_dr, &eps_II, &mu_df, &mu_ds, &dmu_df_dr);
-  f0[0] = 2.*mu_df + 2.*dmu_df_dr*x[0] - 1.;
-  f0[1] = 2.*mu_df - 2.*dmu_df_dr*x[0] - 1.;
+  analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
+  analytic_2d_0_dT_dr(dim, t, x, Nf, &dT_dr, NULL);
+  MantleViscosityDerivativeR(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, dT_dr, &eps_II, &mu_df, &mu_ds, &dmu_df_dr);
+  f0[0] = 2.*mu_df/mu0 + 2.*dmu_df_dr*x[0]*(R_E/mu0) - 1.;
+  f0[1] = 2.*mu_df/mu0 - 2.*dmu_df_dr*x[0]*(R_E/mu0) - 1.;
 }
 
 static void stokes_momentum_constant(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -546,17 +554,18 @@ static void stokes_momentum_test3(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II*(PetscSqr(R_E)/kappa);
 
   for (c = 0; c < dim; ++c) {
@@ -571,18 +580,19 @@ static void stokes_momentum_test4(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds = 3.5;
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : PetscPowReal(eps_II*(PetscSqr(R_E)/kappa), (1.0 - n_ds)/n_ds);
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -596,18 +606,19 @@ static void stokes_momentum_test5(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (mu_ds*mu_ds/mu0)/mu0;
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -621,17 +632,18 @@ static void stokes_momentum_test6(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (mu_df/(mu_ds + mu_df));
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -645,18 +657,19 @@ static void stokes_momentum_test7(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (2.0*mu_ds*mu_df/(mu_ds + mu_df))/(1e17*mu0);
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -732,16 +745,16 @@ static void f0_bouyancy(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 #ifdef SPHERICAL
   const PetscReal r      = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional readius */
 #endif
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
+  const PetscReal mu0    = constants[0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
+  const PetscReal R_E    = constants[1]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa  = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT = constants[3]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0   = constants[4]; /* Mantle density kg/m^3 */
+  const PetscReal alpha  = constants[6]; /* Coefficient of thermal expansivity K^{-1} */
   const PetscReal T      = PetscRealPart(a[0]);
   const PetscReal g      = 9.8;    /* Acceleration due to gravity m/s^2 */
-  const PetscReal alpha  = 2.0e-5; /* Coefficient of thermal expansivity K^{-1} */
   const PetscReal Ra     = (rho0*g*alpha*DeltaT*PetscPowRealInt(R_E, 3))/(mu0*kappa);
-  const PetscReal f      = -constants[6] * Ra * T; /* Nondimensional body force */
+  const PetscReal f      = -constants[8] * Ra * T; /* Nondimensional body force */
   PetscInt        d;
 
 #ifdef SPHERICAL
@@ -851,17 +864,18 @@ static void stokes_momentum_vel_J_test3(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II*(PetscSqr(R_E)/kappa);
   for (fc = 0; fc < dim; ++fc) {
     for (df = 0; df < dim; ++df) {
@@ -880,18 +894,19 @@ static void stokes_momentum_vel_J_test4(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : PetscPowReal(eps_II, (1.0 - n_ds)/n_ds);
   for (fc = 0; fc < dim; ++fc) {
@@ -911,19 +926,20 @@ static void stokes_momentum_vel_J_test5(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (mu_ds*mu_ds/mu0)/mu0;
   for (fc = 0; fc < dim; ++fc) {
@@ -943,18 +959,19 @@ static void stokes_momentum_vel_J_test6(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (mu_df/(mu_ds + mu_df));
   for (fc = 0; fc < dim; ++fc) {
@@ -974,19 +991,20 @@ static void stokes_momentum_vel_J_test7(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (2.0*mu_ds*mu_df/(mu_ds + mu_df))/(1e17*mu0);
   for (fc = 0; fc < dim; ++fc) {
@@ -1022,21 +1040,22 @@ static void stokes_momentum_vel_J_dislocation(PetscInt dim, PetscInt Nf, PetscIn
                                               const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                               PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu_max = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = PetscMin(mu_max, PetscMax(mu_min, mu_ds))/mu0;
   for (fc = 0; fc < dim; ++fc) {
@@ -1056,21 +1075,22 @@ static void stokes_momentum_vel_J_composite(PetscInt dim, PetscInt Nf, PetscInt 
                                             const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                             PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu_max = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal mu0    = constants[0];
-  const PetscReal R_E    = constants[1];
-  const PetscReal kappa  = constants[2];
-  const PetscReal DeltaT = constants[3];
-  const PetscReal rho0   = constants[4];
-  const PetscReal beta   = constants[5];
-  const PetscReal T      = PetscRealPart(a[0]);
-  const PetscReal n_ds   = 3.5;
+  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu0      = constants[0];
+  const PetscReal R_E      = constants[1];
+  const PetscReal kappa    = constants[2];
+  const PetscReal DeltaT   = constants[3];
+  const PetscReal rho0     = constants[4];
+  const PetscReal beta     = constants[5];
+  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal T        = PetscRealPart(a[0]);
+  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = (2.0*mu_ds*mu_df/(mu_ds + mu_df));
   mu = PetscMin(mu_max, PetscMax(mu_min, mu))/mu0;
@@ -1675,19 +1695,21 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
   break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid boundary condition type %d (%s)", (PetscInt) user->bcType, bcTypes[PetscMin(user->bcType, NUM_BC_TYPES)]);
   }
+#define NUM_CONSTANTS 9
   /* Units */
   {
     /* TODO: Make these a bag */
-    const PetscReal rho0   = 3300.;      /* Mantle density kg/m^3 */
-    const PetscReal g      = 9.8;        /* Acceleration due to gravity m/s^2 */
-    const PetscReal alpha  = 2.0e-5;     /* Coefficient of thermal expansivity K^{-1} */
-    const PetscReal beta   = 4.3e-12;    /* Adiabatic compressibility, 1/Pa */
-    PetscReal       mu0    = 1.0e20;     /* Mantle viscosity kg/(m s)  : Mass Scale */
-    PetscReal       R_E    = 6.371137e6; /* Radius of the Earth m      : Length Scale */
-    PetscReal       kappa  = 1.0e-6;     /* Thermal diffusivity m^2/s  : Time Scale */
-    PetscReal       DeltaT = 1400;       /* Mantle temperature range K : Temperature Scale */
-    PetscReal       Ra;                  /* Rayleigh number */
-    PetscScalar     constants[7];
+    const PetscReal rho0     = 3300.;      /* Mantle density kg/m^3 */
+    const PetscReal g        = 9.8;        /* Acceleration due to gravity m/s^2 */
+    const PetscReal alpha    = 2.0e-5;     /* Coefficient of thermal expansivity K^{-1} */
+    const PetscReal beta     = 4.3e-12;    /* Adiabatic compressibility, 1/Pa */
+    PetscReal       mu0      = 1.0e20;     /* Mantle viscosity kg/(m s)  : Mass Scale */
+    PetscReal       R_E      = 6.371137e6; /* Radius of the Earth m      : Length Scale */
+    PetscReal       kappa    = 1.0e-6;     /* Thermal diffusivity m^2/s  : Time Scale */
+    PetscReal       DeltaT   = 1400;       /* Mantle temperature range K : Temperature Scale */
+    PetscReal       dT_ad_dr = -3.e-4;     /* Adiabatic temperature gradient, K/m */
+    PetscReal       Ra;                    /* Rayleigh number */
+    PetscScalar     constants[NUM_CONSTANTS];
 
     constants[0] = mu0;
     constants[1] = R_E;
@@ -1695,12 +1717,14 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
     constants[3] = DeltaT;
     constants[4] = rho0;
     constants[5] = beta;
-    constants[6] = 1.0;
+    constants[6] = alpha;
+    constants[7] = dT_ad_dr;
+    constants[8] = 1.0;
 
     Ra   = (rho0*g*alpha*DeltaT*PetscPowRealInt(R_E, 3))/(mu0*kappa);
-    ierr = PetscOptionsGetScalar(NULL, NULL, "-Ra_mult", &constants[6], NULL);CHKERRQ(ierr);
-    ierr = PetscPrintf(PETSC_COMM_WORLD, "Ra: %g\n", Ra * constants[6]);CHKERRQ(ierr);
-    ierr = PetscDSSetConstants(prob, 7, constants);CHKERRQ(ierr);
+    ierr = PetscOptionsGetScalar(NULL, NULL, "-Ra_mult", &constants[8], NULL);CHKERRQ(ierr);
+    ierr = PetscPrintf(PETSC_COMM_WORLD, "Ra: %g\n", Ra * constants[8]);CHKERRQ(ierr);
+    ierr = PetscDSSetConstants(prob, NUM_CONSTANTS, constants);CHKERRQ(ierr);
     /* ierr = DMPlexSetScale(dm, PETSC_UNIT_LENGTH, R_E);CHKERRQ(ierr);
      ierr = DMPlexSetScale(dm, PETSC_UNIT_TIME,   R_E*R_E/kappa);CHKERRQ(ierr); */
   }
