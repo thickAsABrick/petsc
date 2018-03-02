@@ -1,0 +1,89 @@
+Ra: 2.3418e+09
+DM Object: 1 MPI processes
+  type: plex
+DM_0x84000000_6 in 2 dimensions:
+  0-cells: 25
+  1-cells: 40
+  2-cells: 16
+Labels:
+  marker: 4 strata with value/size (4 (9), 2 (9), 1 (9), 3 (9))
+  Face Sets: 4 strata with value/size (4 (6), 2 (6), 1 (6), 3 (6))
+  depth: 3 strata with value/size (0 (25), 1 (40), 2 (16))
+  Mesh in 2 dimensions:
+    0-cells:   9  
+    1-cells:   12  
+    2-cells:   4  
+  Labels:
+    depth: 3 strata with value/size (0 (9), 1 (12), 2 (4))
+    Face Sets: 4 strata with value/size (4 (2), 2 (2), 1 (2), 3 (2))
+    marker: 4 strata with value/size (4 (5), 2 (5), 1 (5), 3 (5))
+Integral of pressure for exact solution: 0.0411961
+  0 SNES Function norm 2.301718910609e+00 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 12
+    0 KSP preconditioned resid norm 2.291505591106e+00 true resid norm 2.301718910609e+00 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 12
+    1 KSP preconditioned resid norm 3.860488562777e-09 true resid norm 2.274703023119e-10 ||r(i)||/||b|| 9.882627338354e-11
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 13
+    2 KSP preconditioned resid norm 2.467362155933e-14 true resid norm 9.203668546051e-16 ||r(i)||/||b|| 3.998606651590e-16
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 2.301718910609e+00 gnorm 9.184284798472e-16
+  1 SNES Function norm 9.184284798472e-16 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+  0 SNES Function norm 3.495229634744e+00 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 24
+    0 KSP preconditioned resid norm 5.384792331952e+00 true resid norm 3.495229634744e+00 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 24
+    1 KSP preconditioned resid norm 9.349849942540e-09 true resid norm 2.411827475010e-11 ||r(i)||/||b|| 6.900340541393e-12
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 25
+    2 KSP preconditioned resid norm 1.196733634712e-13 true resid norm 2.371466526786e-15 ||r(i)||/||b|| 6.784866159330e-16
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 3.495229634744e+00 gnorm 2.648371571496e-15
+  1 SNES Function norm 2.648371571496e-15 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+  0 SNES Function norm 5.087423281169e+00 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 42
+    0 KSP preconditioned resid norm 1.159967968683e+01 true resid norm 5.087423281169e+00 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 42
+    1 KSP preconditioned resid norm 4.958919539508e-07 true resid norm 1.488815874517e-11 ||r(i)||/||b|| 2.926463540056e-12
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 54
+    2 KSP preconditioned resid norm 1.196972298617e-12 true resid norm 7.427121258316e-15 ||r(i)||/||b|| 1.459898429487e-15
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 5.087423281169e+00 gnorm 7.450460619453e-15
+  1 SNES Function norm 7.450460619453e-15 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+  0 SNES Function norm 7.284560137140e+00 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 65
+    0 KSP preconditioned resid norm 2.404364164752e+01 true resid norm 7.284560137140e+00 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 65
+    1 KSP preconditioned resid norm 3.825292597359e-06 true resid norm 7.628450352942e-10 ||r(i)||/||b|| 1.047208096210e-10
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 137
+    2 KSP preconditioned resid norm 1.299808742025e-11 true resid norm 1.742909437090e-14 ||r(i)||/||b|| 2.392607658222e-15
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 7.284560137140e+00 gnorm 1.693752522912e-14
+  1 SNES Function norm 1.693752522912e-14 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+  0 SNES Function norm 1.036048938461e+01 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 120
+    0 KSP preconditioned resid norm 4.893864986587e+01 true resid norm 1.036048938461e+01 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 120
+    1 KSP preconditioned resid norm 4.799761064731e-05 true resid norm 1.487627005431e-09 ||r(i)||/||b|| 1.435865575655e-10
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 339
+    2 KSP preconditioned resid norm 2.278061302293e-11 true resid norm 4.820034346743e-14 ||r(i)||/||b|| 4.652323039780e-15
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 1.036048938461e+01 gnorm 4.841411649471e-14
+  1 SNES Function norm 4.841411649471e-14 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+L_2 convergence rate: 2.
+  0 SNES Function norm 2.301718910609e+00 
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 12
+    0 KSP preconditioned resid norm 2.291505591106e+00 true resid norm 2.301718910609e+00 ||r(i)||/||b|| 1.000000000000e+00
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 12
+    1 KSP preconditioned resid norm 3.860488562777e-09 true resid norm 2.274703023119e-10 ||r(i)||/||b|| 9.882627338354e-11
+    Linear fieldsplit_pressure_ solve converged due to CONVERGED_RTOL iterations 13
+    2 KSP preconditioned resid norm 2.467362155933e-14 true resid norm 9.203668546051e-16 ||r(i)||/||b|| 3.998606651590e-16
+  Linear solve converged due to CONVERGED_RTOL iterations 2
+      Line search: Using full step: fnorm 2.301718910609e+00 gnorm 9.184284798472e-16
+  1 SNES Function norm 9.184284798472e-16 
+Nonlinear solve converged due to CONVERGED_FNORM_ABS iterations 1
+L_2 Error: 0.0264 [0.00377, 0.0262]
+Integral of pressure for computed solution: 0.
