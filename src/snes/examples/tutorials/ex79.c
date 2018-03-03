@@ -1789,7 +1789,7 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
   ierr = VecGetArray(vT, &va);CHKERRQ(ierr);
   switch (dim) {
   case 2:
-    ierr = PetscSectionGetDof(cs, cStart, &dof);CHKERRQ(ierr);
+    if (cEnd > cStart) {ierr = PetscSectionGetDof(cs, cStart, &dof);CHKERRQ(ierr);}
     for (c = cStart; c < cEnd; ++c) {
       const PetscScalar *ct, *vx;
       PetscScalar       *vt;
@@ -1916,8 +1916,10 @@ static PetscErrorCode CreateInitialCoarseTemperature(DM dm, AppCtx *user)
   PetscFunctionReturn(0);
 }
 
-/* Distribute initial serial temperature to the new distributed mesh */
-static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
+/* Distribute initial serial temperature to the new distributed mesh
+     cell: Flag for temperatures on cells or vertices
+*/
+static PetscErrorCode DistributeTemperature(DM dm, PetscBool cell, AppCtx *user)
 {
   DM             tdm;
   Vec            T;
@@ -1929,9 +1931,15 @@ static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
     PetscSection   secs, secp;
     Vec            tmp;
 
-    ierr = CreateTemperatureVector(dm, user);CHKERRQ(ierr);
-    ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
-    ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+    if (cell) {
+      ierr = CreateCellTemperatureVector(dm, user->coarsen, user);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
+    } else {
+      ierr = CreateTemperatureVector(dm, user);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+    }
 
     ierr = VecGetDM(user->Tinit, &dms);CHKERRQ(ierr);
     ierr = VecGetDM(T, &dmp);CHKERRQ(ierr);
@@ -1944,8 +1952,13 @@ static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
 
     ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
     ierr = VecDestroy(&user->Tinit);CHKERRQ(ierr);
+    if (cell) {
+      ierr = CreateTemperatureVector(dm, user);CHKERRQ(ierr);
+      ierr = TransferCellToVertexTemperature(dm);CHKERRQ(ierr);
+    }
   }
-  ierr = TempViewFromOptions(dm, "-dm_aux_view", "-temp_vec_view");CHKERRQ(ierr);
+  if (cell) {ierr = CellTempViewFromOptions(dm, NULL, "dist");CHKERRQ(ierr);}
+  else      {ierr = TempViewFromOptions(dm, NULL, "dist");CHKERRQ(ierr);}
   PetscFunctionReturn(0);
 }
 
@@ -1993,6 +2006,8 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   if (dim > 3) SETERRQ1(comm,PETSC_ERR_ARG_OUTOFRANGE,"dim %D is too big, must be <= 3",dim);
   ierr = MPI_Comm_rank(comm, &rank);CHKERRQ(ierr);
   cells[0] = cells[1] = cells[2] = user->simplex ? dim : 3;
+  if (dim == 2) {perm[0] = 2; perm[1] = 0; perm[2] = 1;}
+  else          {perm[0] = 0; perm[1] = 1; perm[2] = 2;}
   if (!rank) {
     if (user->simplex) SETERRQ(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Citom grids do not use simplices. Use -simplex 0");
     ierr = PetscStrcpy(filename, user->mantleBasename);CHKERRQ(ierr);
@@ -2002,8 +2017,6 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     ierr = PetscViewerFileSetMode(viewer, FILE_MODE_READ);CHKERRQ(ierr);
     ierr = PetscViewerFileSetName(viewer, filename);CHKERRQ(ierr);
     ierr = PetscViewerRead(viewer, line, 3, NULL, PETSC_STRING);CHKERRQ(ierr);
-    if (dim == 2) {perm[0] = 2; perm[1] = 0; perm[2] = 1;}
-    else          {perm[0] = 0; perm[1] = 1; perm[2] = 2;}
     snum = sscanf(line, "%d %d %d", &verts[perm[0]], &verts[perm[1]], &verts[perm[2]]);
     if (snum != 3) SETERRQ1(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Unable to parse Citcom vertex file header: %s", line);
     for (d = 0; d < 3; ++d) {
@@ -2021,7 +2034,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     PetscInt ccells[3];
     /* Create coarse mesh */
     for (d = 0; d < dim; ++d) {
-      if ((verts[d]-1) % div) SETERRQ3(comm, PETSC_ERR_ARG_WRONG, "Cannot divide Cells_%c = %D by %D evenly", 'x'+((char) d), verts[d]-1, div);
+      if (verts[d] && (verts[d]-1) % div) SETERRQ3(comm, PETSC_ERR_ARG_WRONG, "Cannot divide Cells_%c = %D by %D evenly", 'x'+((char) d), verts[d]-1, div);
       ccells[d] = (verts[d]-1)/div;
     }
     ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, ccells, NULL, NULL, NULL, PETSC_TRUE, &user->cdm);CHKERRQ(ierr);
@@ -2063,7 +2076,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
       }
     }
     /* Create coarse coordinates */
-    if (user->coarsen) {
+    if (!rank && user->coarsen) {
       PetscInt      Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]];
       PetscInt      Ncx = (Nx-1)/div + 1, Ncy = (Ny-1)/div + 1, Ncz = (Nz-1)/div + 1;
       Vec           coordinatesC;
@@ -2129,11 +2142,12 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
       Vec T;
 
       ierr = PetscObjectSetName((PetscObject) dmDist,"Distributed Mesh");CHKERRQ(ierr);
-      ierr = PetscObjectQuery((PetscObject) user->cdm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
-      ierr = PetscObjectQuery((PetscObject) user->cdm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) user->cdm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) user->cdm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
       user->Tinit = T;
       ierr = PetscObjectReference((PetscObject) user->Tinit);CHKERRQ(ierr);
-      ierr = PetscObjectCompose((PetscObject) user->cdm, "A", NULL);CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) user->cdm, "cdmAux", NULL);CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) user->cdm, "cA", NULL);CHKERRQ(ierr);
       ierr = DMDestroy(&user->cdm);CHKERRQ(ierr);
       user->cdm = dmDist;
     }
@@ -2149,6 +2163,7 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
       ierr = PetscObjectQuery((PetscObject) *dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
       user->Tinit = T;
       ierr = PetscObjectReference((PetscObject) user->Tinit);CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) *dm, "dmAux", NULL);CHKERRQ(ierr);
       ierr = PetscObjectCompose((PetscObject) *dm, "A", NULL);CHKERRQ(ierr);
       ierr = DMDestroy(dm);CHKERRQ(ierr);
       *dm  = dmDist;
@@ -2686,9 +2701,9 @@ int main(int argc, char **argv)
   ierr = CreateMesh(PETSC_COMM_WORLD, &user, &dm);CHKERRQ(ierr);
   ierr = SetupDiscretization(PETSC_COMM_WORLD, &prob, &user);CHKERRQ(ierr);
   if (user.coarsen) {
-    ierr = DistributeTemperature(user.cdm, &user);CHKERRQ(ierr);
+    ierr = DistributeTemperature(user.cdm, PETSC_TRUE, &user);CHKERRQ(ierr);
   } else {
-    ierr = DistributeTemperature(dm, &user);CHKERRQ(ierr);
+    ierr = DistributeTemperature(dm, PETSC_FALSE, &user);CHKERRQ(ierr);
   }
   ierr = CreateHierarchy(dm, prob, &dm, &user);CHKERRQ(ierr);
   ierr = CreateNullSpaces(dm, &user);CHKERRQ(ierr);
