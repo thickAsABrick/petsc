@@ -13,11 +13,15 @@ constrained to have zero integral over the domain.
 
 To produce nice output, use
 
-  -dm_view hdf5:mantle.h5 -sol_vec_view hdf5:mantle.h5::append -initial_vec_view hdf5:mantle.h5::append -temp_vec_view hdf5:mantle.h5::append -viscosity_vec_view hdf5:mantle.h5::append
+  -dm_view hdf5:mantle.h5 -sol_vec_view hdf5:mantle.h5::append -initial_vec_view hdf5:mantle.h5::append -temp_fine_view hdf5:mantle.h5::append -viscosity_vec_view hdf5:mantle.h5::append
 
 and to get fields at each solver iterate
 
   -dmsnes_solution_vec_view hdf5:mantle.h5::append -dmsnes_residual_vec_view hdf5:mantle.h5::append
+
+and to get temperature on different levels (averaged temp on level 0 and injected temp on level 1)
+
+  -dm_s_l0_view hdf5:mantle0.h5 -temp_s_l0_view hdf5:mantle0.h5::append -dm_r_l1_view hdf5:mantle1.h5 -temp_r_l1_view hdf5:mantle1.h5::append
 
 Testing Solver:
 
@@ -2609,6 +2613,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
     ierr = PetscObjectCompose((PetscObject) rdm, "cdmAux", NULL);CHKERRQ(ierr);
     ierr = PetscObjectCompose((PetscObject) rdm, "cA", NULL);CHKERRQ(ierr);
     ierr = DMDestroy(&dm);CHKERRQ(ierr);
+    ierr = TempViewFromOptions(dm, NULL, "fine");CHKERRQ(ierr);
     dm     = rdm;
     *newdm = dm;
     /* The previous loop used injection on the temperature, but we probably want smoothing */
