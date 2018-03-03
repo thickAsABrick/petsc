@@ -1785,7 +1785,7 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
   PetscScalar       *va;
   DMLabel            lright, ltop;
   DM                 coorddm;
-  Vec                coordinates;
+  Vec                coordinates, Tg;
   const PetscScalar *coords;
   PetscInt           dim, cStart, cEnd, c, vStart, vEnd, dof;
   PetscErrorCode     ierr;
@@ -1869,6 +1869,13 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
   ierr = VecRestoreArrayRead(cT, &ca);CHKERRQ(ierr);
   ierr = VecRestoreArray(vT, &va);CHKERRQ(ierr);
   ierr = VecRestoreArrayRead(coordinates, &coords);CHKERRQ(ierr);
+  /* Since we only set the left/bottom edges, we need to sum the contributions across procs */
+  ierr = DMGetGlobalVector(vtdm, &Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalBegin(vtdm, vT, ADD_VALUES, Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalEnd(vtdm,   vT, ADD_VALUES, Tg);CHKERRQ(ierr);
+  ierr = DMGlobalToLocalBegin(vtdm, Tg, INSERT_VALUES, vT);CHKERRQ(ierr);
+  ierr = DMGlobalToLocalEnd(vtdm,   Tg, INSERT_VALUES, vT);CHKERRQ(ierr);
+  ierr = DMRestoreGlobalVector(vtdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -1977,8 +1984,8 @@ static PetscErrorCode DistributeTemperature(DM dm, PetscBool cell, AppCtx *user)
       ierr = TransferCellToVertexTemperature(dm);CHKERRQ(ierr);
     }
   }
-  if (cell) {ierr = CellTempViewFromOptions(dm, NULL, "dist");CHKERRQ(ierr);}
-  else      {ierr = TempViewFromOptions(dm, NULL, "dist");CHKERRQ(ierr);}
+  ierr = CellTempViewFromOptions(dm, NULL, "cdist");CHKERRQ(ierr);
+  ierr = TempViewFromOptions(dm, NULL, "dist");CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -2613,9 +2620,9 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
     ierr = PetscObjectCompose((PetscObject) rdm, "cdmAux", NULL);CHKERRQ(ierr);
     ierr = PetscObjectCompose((PetscObject) rdm, "cA", NULL);CHKERRQ(ierr);
     ierr = DMDestroy(&dm);CHKERRQ(ierr);
-    ierr = TempViewFromOptions(dm, NULL, "fine");CHKERRQ(ierr);
     dm     = rdm;
     *newdm = dm;
+    ierr = TempViewFromOptions(dm, NULL, "fine");CHKERRQ(ierr);
     /* The previous loop used injection on the temperature, but we probably want smoothing */
     for (c = 0; c < user->coarsen; ++c) {
       DM  rtdm, ctdm;
