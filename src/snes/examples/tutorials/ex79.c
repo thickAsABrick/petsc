@@ -1557,6 +1557,7 @@ static PetscErrorCode CreateCellTemperatureVector(DM dm, PetscInt numRef, AppCtx
     ierr = PetscDualSpaceSetNumComponents(Q, 1);CHKERRQ(ierr);
     ierr = PetscDualSpaceSetOrder(Q, order);CHKERRQ(ierr);
     ierr = PetscDualSpaceLagrangeSetTensor(Q, PETSC_TRUE);CHKERRQ(ierr);
+    ierr = PetscDualSpaceLagrangeSetContinuity(Q, PETSC_FALSE);CHKERRQ(ierr);
     ierr = PetscDualSpaceSetUp(Q);CHKERRQ(ierr);
     /* Create element */
     ierr = PetscFECreate(comm, &tfe);CHKERRQ(ierr);
@@ -1601,6 +1602,7 @@ static PetscErrorCode CreateTemperatureVector(DM dm, AppCtx *user)
   ierr = PetscFEGetQuadrature(vfe, &q);CHKERRQ(ierr);
 
   ierr = DMClone(dm, &tdm);CHKERRQ(ierr);
+  ierr = DMPlexSetRegularRefinement(tdm, PETSC_TRUE);CHKERRQ(ierr);
   ierr = DMPlexCopyCoordinates(dm, tdm);CHKERRQ(ierr);
   ierr = DMGetDS(tdm, &tprob);CHKERRQ(ierr);
   ierr = PetscFECreateDefault(comm, dim, 1, user->simplex, "temp_", PETSC_DEFAULT, &tfe);CHKERRQ(ierr);
@@ -1711,17 +1713,21 @@ static PetscErrorCode TransferCellTemperature(DM cdm, DM rdm)
     for (c = cStart; c < cEnd; ++c) {
       const PetscScalar *ct;
       PetscScalar       *rt;
-      const PetscInt     ioff[4] = {0, 1, 0, 1};
-      const PetscInt     joff[4] = {0, 0, 1, 1};
-      const PetscInt     num     = (PetscInt) PetscPowReal(dof, 1./dim);
-      const PetscInt     off     = num/2;
-      PetscInt           i, j;
+      const PetscInt     ioff[2][2] = {{0, 1}, {1, 0}};
+      const PetscInt     joff[2][2] = {{0, 0}, {1, 1}};
+      const PetscInt     num        = (PetscInt) PetscPowReal(dof, 1./dim);
+      const PetscInt     half       = num/2;
+      PetscInt           i, j, k, l;
 
       ierr = DMPlexPointLocalRead(ctdm, c, ca, &ct);CHKERRQ(ierr);
-      ierr = DMPlexPointLocalRef(rtdm, c, ra, &rt);CHKERRQ(ierr);
       for (j = 0; j < 2; ++j) {
         for (i = 0; i < 2; ++i) {
-          rt[(j+joff[j*2+i]*off)*num + i+ioff[j*2+i]*off] = ct[j*2+i];
+          ierr = DMPlexPointLocalRef(rtdm, c*4 + j*2+i, ra, &rt);CHKERRQ(ierr);
+          for (l = 0; l < half; ++l) {
+            for (k = 0; k < half; ++k) {
+              rt[l*half+k] = ct[(joff[j][i]*half+l)*num + ioff[j][i]*half+k];
+            }
+          }
         }
       }
     }
@@ -1731,6 +1737,11 @@ static PetscErrorCode TransferCellTemperature(DM cdm, DM rdm)
   ierr = VecRestoreArrayRead(cT, &ca);CHKERRQ(ierr);
   ierr = VecRestoreArray(rT, &ra);CHKERRQ(ierr);
   PetscFunctionReturn(0);
+}
+
+static int IsVeryCloseReal(PetscReal x, PetscReal y)
+{
+  return PetscAbsReal(x - y) < PETSC_SMALL;
 }
 
 static PetscErrorCode TransferCellToVertexTemperature(DM dm)
@@ -1766,17 +1777,6 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
   ierr = VecGetArray(vT, &va);CHKERRQ(ierr);
   switch (dim) {
   case 2:
-    /*
-     3---------2---------2
-     |         |         |
-     |    D    2    C    |
-     |         |         |
-     3----3----0----1----1
-     |         |         |
-     |    A    0    B    |
-     |         |         |
-     0---------0---------1
-     */
     ierr = PetscSectionGetDof(cs, cStart, &dof);CHKERRQ(ierr);
     for (c = cStart; c < cEnd; ++c) {
       const PetscScalar *ct, *vx;
@@ -1787,9 +1787,11 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
       PetscInt           cone[4], cp = 0, rval, tval;
       PetscInt          *closure = NULL;
       PetscInt           closureSize, cl;
+      PetscBool          found = PETSC_FALSE;
 
       ierr = DMPlexPointLocalRead(ctdm, c, ca, &ct);CHKERRQ(ierr);
       ierr = DMPlexGetTransitiveClosure(ctdm, c, PETSC_TRUE, &closureSize, &closure);CHKERRQ(ierr);
+      if (closureSize != 9) SETERRQ1(PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, "Closure size should be 9, not %D", closureSize);
       for (cl = 0; cl < closureSize*2; cl += 2) {
         PetscInt point = closure[cl];
         if ((point < vStart) || (point >= vEnd)) continue;
@@ -1803,24 +1805,31 @@ static PetscErrorCode TransferCellToVertexTemperature(DM dm)
       if (cp != 4) SETERRQ1(PETSC_COMM_SELF, PETSC_ERR_ARG_OUTOFRANGE, "Cone size should be 4, not %D", cp);
       for (cp = 0; cp < 4; ++cp) {
         /* Set lower left vertex */
-        if (PetscEqualReal(ccoords[cp*2+0], xmin) && PetscEqualReal(ccoords[cp*2+1], ymin)) {
+        if (IsVeryCloseReal(ccoords[cp*2+0], xmin) && IsVeryCloseReal(ccoords[cp*2+1], ymin)) {
           ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
           vt[0] = ct[0];
-        }
-        /* Set right and top side vertices */
-        ierr = DMLabelGetValue(lright, cone[cp], &rval);CHKERRQ(ierr);
-        ierr = DMLabelGetValue(ltop, cone[cp], &tval);CHKERRQ(ierr);
-        if ((rval == 1) && (tval == 1)) {
-          ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
-          vt[0] = ct[dof-1];
-        } else if (rval == 1) {
-          ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
-          vt[0] = ct[num-1];
-        } else if (tval == 1) {
-          ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
-          vt[0] = ct[dof-num];
+          if ((vt[0] < 0.0) || (vt[0] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) vt[0]);
+          found = PETSC_TRUE;
+        } else {
+          /* Set right and top side vertices */
+          ierr = DMLabelGetValue(lright, cone[cp], &rval);CHKERRQ(ierr);
+          ierr = DMLabelGetValue(ltop, cone[cp], &tval);CHKERRQ(ierr);
+          if ((rval == 1) && (tval == 1)) {
+            ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
+            vt[0] = ct[dof-1];
+            if ((vt[0] < 0.0) || (vt[0] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) vt[0]);
+          } else if (rval == 1) {
+            ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
+            vt[0] = ct[num-1];
+            if ((vt[0] < 0.0) || (vt[0] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) vt[0]);
+          } else if (tval == 1) {
+            ierr = DMPlexPointLocalRef(vtdm, cone[cp], va, &vt);CHKERRQ(ierr);
+            vt[0] = ct[dof-num];
+            if ((vt[0] < 0.0) || (vt[0] > 1.0)) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_OUTOFRANGE, "Temperature %g not in [0.0, 1.0]", (double) vt[0]);
+          }
         }
       }
+      if (!found) SETERRQ1(PETSC_COMM_SELF, PETSC_ERR_ARG_WRONG, "Lower left vertex of cell %D not found", c);
     }
     break;
   default: SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "No cell-to-vertex for dimension %d", dim);
@@ -1846,13 +1855,14 @@ static PetscErrorCode CreateInitialCoarseTemperature(DM dm, AppCtx *user)
   if (!dm) PetscFunctionReturn(0);
   ierr = MPI_Comm_rank(PetscObjectComm((PetscObject) dm), &rank);CHKERRQ(ierr);
   ierr = CreateCellTemperatureVector(dm, user->coarsen, user);CHKERRQ(ierr);
-  ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
-  ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &Ts);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &Ts);CHKERRQ(ierr);
   ierr = DMGetDefaultSection(tdm, &tsec);CHKERRQ(ierr);
   ierr = VecGetArray(Ts, &T);CHKERRQ(ierr);
   if (!rank) {
     PetscInt Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]];
-    PetscInt Ncx = (Nx-1)/div, Ncy = (Ny-1)/div;
+    PetscInt Ncx = PetscMax(1, (Nx-1)/div), Ncy = (Ny-1)/div;
+    PetscInt Nlx = PetscMin(Ncx, div), Nly = PetscMin(Ncy, div);
     PetscInt cStart, vx, vy, vz, count;
     char     filename[PETSC_MAX_PATH_LEN];
     float   *temp;
@@ -1870,13 +1880,13 @@ static PetscErrorCode CreateInitialCoarseTemperature(DM dm, AppCtx *user)
       for (vx = 0; vx < Nx; ++vx) {
         ierr = PetscViewerRead(viewer, temp, Nz, &count, PETSC_FLOAT);CHKERRQ(ierr);
         if (count != Nz) SETERRQ1(PetscObjectComm((PetscObject) dm), PETSC_ERR_ARG_WRONG, "Mantle temperature file %s had incorrect length", filename);
-        /* Ignore right edges, and just use the same temperature as the last vertex */
-        if ((vy == Ny-1) || (vx == Nx-1)) continue;
+        /* Ignore right and top edges, and just use the same temperature as the last vertex */
+        if ((vy == Ny-1) || (vx && vx == Nx-1)) continue;
         if (user->byte_swap) {ierr = PetscByteSwap(temp, PETSC_FLOAT, count);CHKERRQ(ierr);}
-        for (vz = 0; vz < Nz; ++vz) {
+        for (vz = 0; vz < Nz-1; ++vz) {
           /* fine cell is (vz*(Ny-1) + vy)*(Nx-1) + vx */
           const PetscInt ccell = (vz/div*Ncy + vy/div)*Ncx + vx/div;
-          PetscInt       coff  = (vz%div*div + vy%div)*div + vx%div;
+          PetscInt       coff  = (vz%div*Nly + vy%div)*Nlx + vx%div;
           PetscInt       off;
 
           ierr = PetscSectionGetOffset(tsec, ccell, &off);CHKERRQ(ierr);
@@ -1996,12 +2006,13 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
   ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, cells, NULL, NULL, NULL, PETSC_TRUE, dm);CHKERRQ(ierr);
   /* Handle coarsening */
   if (user->coarsen) {
+    PetscInt ccells[3];
     /* Create coarse mesh */
     for (d = 0; d < dim; ++d) {
       if ((verts[d]-1) % div) SETERRQ3(comm, PETSC_ERR_ARG_WRONG, "Cannot divide Cells_%c = %D by %D evenly", 'x'+((char) d), verts[d]-1, div);
-      cells[d] = (verts[d]-1)/div;
+      ccells[d] = (verts[d]-1)/div;
     }
-    ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, cells, NULL, NULL, NULL, PETSC_TRUE, &user->cdm);CHKERRQ(ierr);
+    ierr = DMPlexCreateBoxMesh(comm, dim, PETSC_FALSE, ccells, NULL, NULL, NULL, PETSC_TRUE, &user->cdm);CHKERRQ(ierr);
   }
   /* Remap coordinates to unit ball */
   {
@@ -2041,21 +2052,29 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     }
     /* Create coarse coordinates */
     if (user->coarsen) {
+      PetscInt      Nx = user->verts[user->perm[0]], Ny = user->verts[user->perm[1]], Nz = user->verts[user->perm[2]];
+      PetscInt      Ncx = (Nx-1)/div + 1, Ncy = (Ny-1)/div + 1, Ncz = (Nz-1)/div + 1;
       Vec           coordinatesC;
       PetscSection  coordSectionC;
       PetscScalar  *coordsC;
-      PetscInt      vStartC, vEndC;
+      PetscInt      vStartC, vx, vy, vz;
 
-      ierr = DMPlexGetDepthStratum(user->cdm, 0, &vStartC, &vEndC);CHKERRQ(ierr);
+      ierr = DMPlexGetDepthStratum(user->cdm, 0, &vStartC, NULL);CHKERRQ(ierr);
       ierr = DMGetCoordinateSection(user->cdm, &coordSectionC);CHKERRQ(ierr);
       ierr = DMGetCoordinatesLocal(user->cdm, &coordinatesC);CHKERRQ(ierr);
       ierr = VecGetArray(coordinatesC, &coordsC);CHKERRQ(ierr);
-      for (v = vStart; v < vEnd; ++v) {
-        PetscInt off, offC;
+      for (vz = 0; vz < Ncz; ++vz) {
+        for (vy = 0; vy < Ncy; ++vy) {
+          for (vx = 0; vx < Ncx; ++vx) {
+            const PetscInt vc = (vz*Ncy    + vy)*Ncx    + vx;
+            const PetscInt vf = (vz*div*Ny + vy*div)*Nx + vx*div;
+            PetscInt       offF, offC;
 
-        ierr = PetscSectionGetOffset(coordSectionC, v,     &offC);CHKERRQ(ierr);
-        ierr = PetscSectionGetOffset(coordSection,  v*div, &off);CHKERRQ(ierr);
-        for (d = 0; d < dim; ++d) coordsC[off+d] = coords[off+d];
+            ierr = PetscSectionGetOffset(coordSectionC, vc + vStartC, &offC);CHKERRQ(ierr);
+            ierr = PetscSectionGetOffset(coordSection,  vf + vStart,  &offF);CHKERRQ(ierr);
+            for (d = 0; d < dim; ++d) coordsC[offC+d] = coords[offF+d];
+          }
+        }
       }
       ierr = VecRestoreArray(coordinatesC, &coordsC);CHKERRQ(ierr);
     }
