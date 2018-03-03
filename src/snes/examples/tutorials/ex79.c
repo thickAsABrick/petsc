@@ -1504,16 +1504,16 @@ static PetscErrorCode TempViewFromOptions(DM dm, const char tempName[], const ch
 
   PetscFunctionBeginUser;
   va_start(Argp, optbase);
-  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase, &fullLength, Argp);CHKERRQ(ierr);
+  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase ? optbase : "", &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
-  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-dm_%s_view", optmid);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-dm_view" : "-dm_%s_view", optmid);CHKERRQ(ierr);
   ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) Tg, tempName ? tempName : "Temperature");CHKERRQ(ierr);
-  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-temp_%s_view", optmid);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-temp_view" : "-temp_%s_view", optmid);CHKERRQ(ierr);
   ierr = VecViewFromOptions(Tg, NULL, opt);CHKERRQ(ierr);
   ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -1531,16 +1531,16 @@ static PetscErrorCode CellTempViewFromOptions(DM dm, const char tempName[], cons
 
   PetscFunctionBeginUser;
   va_start(Argp, optbase);
-  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase, &fullLength, Argp);CHKERRQ(ierr);
+  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase ? optbase : "", &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
-  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-dm_%s_view", optmid);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-dm_view" : "-dm_%s_view", optmid);CHKERRQ(ierr);
   ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) Tg, tempName ? tempName : "Temperature");CHKERRQ(ierr);
-  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-temp_%s_view", optmid);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-temp_view" : "-temp_%s_view", optmid);CHKERRQ(ierr);
   ierr = VecViewFromOptions(Tg, NULL, opt);CHKERRQ(ierr);
   ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -2622,7 +2622,6 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
     ierr = DMDestroy(&dm);CHKERRQ(ierr);
     dm     = rdm;
     *newdm = dm;
-    ierr = TempViewFromOptions(dm, NULL, "fine");CHKERRQ(ierr);
     /* The previous loop used injection on the temperature, but we probably want smoothing */
     for (c = 0; c < user->coarsen; ++c) {
       DM  rtdm, ctdm;
@@ -2689,7 +2688,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
     *newdm = rdm;
   }
   ierr = DMSetFromOptions(*newdm);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(*newdm, NULL, "-dm_view");CHKERRQ(ierr);
+  ierr = TempViewFromOptions(*newdm, NULL, NULL);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
