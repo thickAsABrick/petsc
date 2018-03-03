@@ -1477,6 +1477,45 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   PetscFunctionReturn(0);
 }
 
+/* View vertex temperatures */
+static PetscErrorCode TempViewFromOptions(DM dm, const char *dmOpt, const char *tempOpt)
+{
+  DM             tdm;
+  Vec            T, Tg;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(tdm, NULL, dmOpt);CHKERRQ(ierr);
+  ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(Tg, NULL, tempOpt);CHKERRQ(ierr);
+  ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode CellTempViewFromOptions(DM dm, const char *dmOpt, const char *tempOpt)
+{
+  DM             tdm;
+  Vec            T, Tg;
+  PetscErrorCode ierr;
+
+  PetscFunctionBeginUser;
+  ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
+  ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(tdm, NULL, dmOpt);CHKERRQ(ierr);
+  ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(Tg, NULL, tempOpt);CHKERRQ(ierr);
+  ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
 /* Create non-dimensional local temperature vector, stored in cell, named "temperature" in the DM
      numRef - The number of refinements between the coarse grid and temperature grid
 */
@@ -1859,7 +1898,7 @@ static PetscErrorCode CreateInitialCoarseTemperature(DM dm, AppCtx *user)
 static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
 {
   DM             tdm;
-  Vec            T, Tg;
+  Vec            T;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
@@ -1884,15 +1923,7 @@ static PetscErrorCode DistributeTemperature(DM dm, AppCtx *user)
     ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
     ierr = VecDestroy(&user->Tinit);CHKERRQ(ierr);
   }
-  ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
-  ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(tdm, NULL, "-dm_aux_view");CHKERRQ(ierr);
-  ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
-  ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-  ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(Tg, NULL, "-temp_vec_view");CHKERRQ(ierr);
-  ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
+  ierr = TempViewFromOptions(dm, "-dm_aux_view", "-temp_vec_view");CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -2036,6 +2067,8 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     ierr = MeshSplitLabels(*dm);CHKERRQ(ierr);
     ierr = MeshSplitLabels(user->cdm);CHKERRQ(ierr);
   }
+  ierr = DMViewFromOptions(*dm, NULL, "-rdm_view");CHKERRQ(ierr);
+  ierr = DMViewFromOptions(user->cdm, NULL, "-cdm_view");CHKERRQ(ierr);
 #if 0
   if (user->coarsen) {ierr = CreateInitialCoarseTemperature(user->cdm, user);CHKERRQ(ierr);}
   else               {ierr = CreateInitialTemperature(*dm, user);CHKERRQ(ierr);}
@@ -2444,9 +2477,12 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       ierr = TransferCellTemperature(cdm, rdm);CHKERRQ(ierr);
       ierr = CreateTemperatureVector(rdm, user);CHKERRQ(ierr);
       ierr = TransferCellToVertexTemperature(rdm);CHKERRQ(ierr);
-      ierr = PetscObjectQuery((PetscObject) cdm, "cdmAux", NULL);CHKERRQ(ierr);
-      ierr = PetscObjectQuery((PetscObject) cdm, "cA", NULL);CHKERRQ(ierr);
-      rdm = cdm;
+      ierr = CellTempViewFromOptions(rdm, "-rcdm_aux_view", "-rctemp_vec_view");CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) cdm, "cdmAux", NULL);CHKERRQ(ierr);
+      ierr = PetscObjectCompose((PetscObject) cdm, "cA", NULL);CHKERRQ(ierr);
+      ierr = DMDestroy(&cdm);CHKERRQ(ierr);
+      ierr = TempViewFromOptions(rdm, "-rdm_aux_view", "-rtemp_vec_view");CHKERRQ(ierr);
+      cdm  = rdm;
     }
   }
   if (user->refine) {
