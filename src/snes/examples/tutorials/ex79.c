@@ -1488,40 +1488,56 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
 }
 
 /* View vertex temperatures */
-static PetscErrorCode TempViewFromOptions(DM dm, const char *dmOpt, const char *tempOpt)
+static PetscErrorCode TempViewFromOptions(DM dm, const char tempName[], const char optbase[], ...)
 {
   DM             tdm;
   Vec            T, Tg;
+  char           optmid[PETSC_MAX_PATH_LEN];
+  char           opt[PETSC_MAX_PATH_LEN];
+  va_list        Argp;
+  size_t         fullLength;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
+  va_start(Argp, optbase);
+  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase, &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(tdm, NULL, dmOpt);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-dm_%s_view", optmid);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(Tg, NULL, tempOpt);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) Tg, tempName ? tempName : "Temperature");CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-temp_%s_view", optmid);CHKERRQ(ierr);
+  ierr = VecViewFromOptions(Tg, NULL, opt);CHKERRQ(ierr);
   ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
-static PetscErrorCode CellTempViewFromOptions(DM dm, const char *dmOpt, const char *tempOpt)
+static PetscErrorCode CellTempViewFromOptions(DM dm, const char tempName[], const char optbase[], ...)
 {
   DM             tdm;
   Vec            T, Tg;
+  char           optmid[PETSC_MAX_PATH_LEN];
+  char           opt[PETSC_MAX_PATH_LEN];
+  va_list        Argp;
+  size_t         fullLength;
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
+  va_start(Argp, optbase);
+  ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase, &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
-  ierr = DMViewFromOptions(tdm, NULL, dmOpt);CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-dm_%s_view", optmid);CHKERRQ(ierr);
+  ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalBegin(tdm, T, INSERT_VALUES, Tg);CHKERRQ(ierr);
   ierr = DMLocalToGlobalEnd(tdm,   T, INSERT_VALUES, Tg);CHKERRQ(ierr);
-  ierr = PetscObjectSetName((PetscObject) Tg, "Temperature");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(Tg, NULL, tempOpt);CHKERRQ(ierr);
+  ierr = PetscObjectSetName((PetscObject) Tg, tempName ? tempName : "Temperature");CHKERRQ(ierr);
+  ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, "-temp_%s_view", optmid);CHKERRQ(ierr);
+  ierr = VecViewFromOptions(Tg, NULL, opt);CHKERRQ(ierr);
   ierr = DMRestoreGlobalVector(tdm, &Tg);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -2500,10 +2516,68 @@ static PetscErrorCode SetupDiscretization(MPI_Comm comm, PetscDS *newprob, AppCt
   PetscFunctionReturn(0);
 }
 
+#include <../src/mat/impls/aij/seq/aij.h>
+/* https://en.wikipedia.org/wiki/Generalized_mean */
+PetscErrorCode MatMultTransposePowerMean_SeqAIJ(Mat A, Vec xx, Vec yy)
+{
+  Mat_SeqAIJ        *a        = (Mat_SeqAIJ *) A->data;
+  Mat_CompressedRow  cprow    = a->compressedrow;
+  PetscBool          usecprow = cprow.use;
+  PetscInt           m        = A->rmap->n;
+  PetscScalar       *y;
+  const PetscScalar *x;
+  const MatScalar   *v;
+  const PetscInt    *ii, *ridx = NULL;
+  PetscInt           i, j;
+  PetscReal          p;
+  PetscBool          flg;
+  PetscErrorCode     ierr;
+
+  PetscFunctionBegin;
+  ierr = PetscObjectComposedDataGetReal((PetscObject) A, MEAN_EXP_TAG, p, flg);CHKERRQ(ierr);
+  ierr = VecSet(yy, 0.0);CHKERRQ(ierr);
+  ierr = VecGetArrayRead(xx, &x);CHKERRQ(ierr);
+  ierr = VecGetArray(yy, &y);CHKERRQ(ierr);
+
+  if (usecprow) {
+    m    = cprow.nrows;
+    ii   = cprow.i;
+    ridx = cprow.rindex;
+  } else {
+    ii = a->i;
+  }
+  for (i = 0; i < m; ++i) {
+    const PetscInt *idx;
+    PetscScalar     xi;
+    PetscInt        n;
+
+    idx = a->j + ii[i];
+    v   = a->a + ii[i];
+    n   = ii[i+1] - ii[i];
+    if (usecprow) {
+      xi = x[ridx[i]];
+    } else {
+      xi = x[i];
+    }
+    for (j = 0; j < n; ++j) {
+      y[idx[j]] += v[j]*PetscPowScalarReal(xi, p);
+      PetscPrintf(PETSC_COMM_SELF, "1/y[%D]: 1/%g = %g\n", idx[j], PetscPowScalarReal(xi, -p)/v[j], v[j]*PetscPowScalarReal(xi, p));
+    }
+  }
+  ierr = PetscLogFlops(2.0*a->nz);CHKERRQ(ierr);
+  for (i = 0; i < A->cmap->n; ++i) {
+    PetscPrintf(PETSC_COMM_SELF, "y[%D]: %g\n", i, PetscPowScalarReal(y[i], 1.0/p));
+  }
+  ierr = VecRestoreArrayRead(xx, &x);CHKERRQ(ierr);
+  ierr = VecRestoreArray(yy, &y);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
 static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *user)
 {
   DM             rdm, cdm, tdm, ctdm;
   PetscInt       dim, c, r;
+  char           tempName[PETSC_MAX_PATH_LEN];
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
@@ -2524,11 +2598,12 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       ierr = TransferCellTemperature(cdm, rdm);CHKERRQ(ierr);
       ierr = CreateTemperatureVector(rdm, user);CHKERRQ(ierr);
       ierr = TransferCellToVertexTemperature(rdm);CHKERRQ(ierr);
-      ierr = CellTempViewFromOptions(rdm, "-rcdm_aux_view", "-rctemp_vec_view");CHKERRQ(ierr);
+      ierr = PetscSNPrintf(tempName, PETSC_MAX_PATH_LEN, "Temperature (Injection) L %D", c+1);CHKERRQ(ierr);
+      ierr = CellTempViewFromOptions(rdm, tempName, "rc_l%D", c+1);CHKERRQ(ierr);
+      ierr = TempViewFromOptions(rdm, tempName, "r_l%D", c+1);CHKERRQ(ierr);
       ierr = PetscObjectCompose((PetscObject) cdm, "cdmAux", NULL);CHKERRQ(ierr);
       ierr = PetscObjectCompose((PetscObject) cdm, "cA", NULL);CHKERRQ(ierr);
       ierr = DMDestroy(&cdm);CHKERRQ(ierr);
-      ierr = TempViewFromOptions(rdm, "-rdm_aux_view", "-rtemp_vec_view");CHKERRQ(ierr);
       cdm  = rdm;
     }
     ierr = PetscObjectCompose((PetscObject) rdm, "cdmAux", NULL);CHKERRQ(ierr);
@@ -2540,6 +2615,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
     for (c = 0; c < user->coarsen; ++c) {
       DM  rtdm, ctdm;
       Vec rT,   cT, Rscale;
+      Vec rTg,  cTg;
       Mat In;
 
       ierr = DMGetCoarseDM(rdm, &cdm);CHKERRQ(ierr);
@@ -2549,11 +2625,27 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       ierr = PetscObjectQuery((PetscObject) cdm, "A",     (PetscObject *) &cT);CHKERRQ(ierr);
       ierr = DMSetCoarseDM(rtdm, ctdm);CHKERRQ(ierr);
       ierr = DMCreateInterpolation(ctdm, rtdm, &In, &Rscale);CHKERRQ(ierr);
-      ierr = MatMultTranspose(In, rT, cT);CHKERRQ(ierr);
-      ierr = VecPointwiseMult(cT, cT, Rscale);CHKERRQ(ierr);
+      ierr = PetscObjectComposedDataSetReal((PetscObject) In, MEAN_EXP_TAG, user->meanExp);CHKERRQ(ierr);
+      ierr = DMGetGlobalVector(ctdm, &cTg);CHKERRQ(ierr);
+      ierr = DMGetGlobalVector(rtdm, &rTg);CHKERRQ(ierr);
+      ierr = DMLocalToGlobalBegin(rtdm, rT, INSERT_VALUES, rTg);CHKERRQ(ierr);
+      ierr = DMLocalToGlobalEnd(rtdm,   rT, INSERT_VALUES, rTg);CHKERRQ(ierr);
+      if (PetscEqualReal(user->meanExp, 1.0)) {
+        ierr = PetscSNPrintf(tempName, PETSC_MAX_PATH_LEN, "Temperature (Linear Average) L %D", c);CHKERRQ(ierr);
+        ierr = MatMultTranspose(In, rTg, cTg);CHKERRQ(ierr);
+        ierr = VecPointwiseMult(cTg, cTg, Rscale);CHKERRQ(ierr);
+      } else {
+        ierr = PetscSNPrintf(tempName, PETSC_MAX_PATH_LEN, "Temperature (Power Law p = %.1f) L %D", user->meanExp, c);CHKERRQ(ierr);
+        ierr = MatShellSetOperation(In, MATOP_MULT_TRANSPOSE, (void (*)(void)) MatMultTransposePowerMean_SeqAIJ);CHKERRQ(ierr);
+        ierr = MatMultTranspose(In, rTg, cTg);CHKERRQ(ierr);
+        ierr = VecPointwiseMult(cTg, cTg, Rscale);CHKERRQ(ierr);
+        ierr = VecPow(cTg, user->meanExp);CHKERRQ(ierr);
+      }
+      ierr = DMGlobalToLocalBegin(ctdm, cTg, INSERT_VALUES, cT);CHKERRQ(ierr);
+      ierr = DMGlobalToLocalEnd(ctdm,   cTg, INSERT_VALUES, cT);CHKERRQ(ierr);
       ierr = MatDestroy(&In);CHKERRQ(ierr);
       ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
-      ierr = TempViewFromOptions(cdm, "-sdm_aux_view", "-stemp_vec_view");CHKERRQ(ierr);
+      ierr = TempViewFromOptions(cdm, tempName, "s_l%D", c);CHKERRQ(ierr);
       rdm  = cdm;
     }
   }
