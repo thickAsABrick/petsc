@@ -1571,6 +1571,7 @@ static PetscErrorCode CreateCellTemperatureVector(DM dm, PetscInt numRef, AppCtx
     ierr = PetscDualSpaceSetUp(Q);CHKERRQ(ierr);
     /* Create element */
     ierr = PetscFECreate(comm, &tfe);CHKERRQ(ierr);
+    ierr = PetscFESetType(tfe, PETSCFEBASIC);CHKERRQ(ierr);
     ierr = PetscFESetBasisSpace(tfe, P);CHKERRQ(ierr);
     ierr = PetscFESetDualSpace(tfe, Q);CHKERRQ(ierr);
     ierr = PetscFESetNumComponents(tfe, 1);CHKERRQ(ierr);
@@ -1581,6 +1582,7 @@ static PetscErrorCode CreateCellTemperatureVector(DM dm, PetscInt numRef, AppCtx
   ierr = PetscObjectSetName((PetscObject) tfe, "cell temperature");CHKERRQ(ierr);
   ierr = PetscDSSetDiscretization(tprob, 0, (PetscObject) tfe);CHKERRQ(ierr);
   ierr = PetscFEDestroy(&tfe);CHKERRQ(ierr);
+  ierr = PetscObjectSetOptionsPrefix((PetscObject) tprob, "ctemp_");CHKERRQ(ierr);
   ierr = PetscDSSetFromOptions(tprob);CHKERRQ(ierr);
   ierr = DMCreateLocalVector(tdm, &temp);CHKERRQ(ierr);
   ierr = PetscObjectCompose((PetscObject) dm, "cdmAux", (PetscObject) tdm);CHKERRQ(ierr);
