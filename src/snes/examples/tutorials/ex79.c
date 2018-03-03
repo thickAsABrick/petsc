@@ -53,6 +53,7 @@ Citcom input:
 #include <petscds.h>
 #include <petscsf.h>
 #include <petscbag.h>
+#include <petsc/private/petscimpl.h> /* For PetscObjectComposedDataRegister() */
 
 typedef enum {NONE, BASIC, ANALYTIC_0, NUM_SOLUTION_TYPES} SolutionType;
 const char *solutionTypes[NUM_SOLUTION_TYPES+1] = {"none", "basic", "analytic_0", "unknown"};
@@ -75,7 +76,9 @@ typedef enum {CONSTANT, LINEAR_T, EXP_T, EXP_INVT, TEST, TEST2, TEST3, TEST4, TE
  */
 const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "linear_t", "exp_t", "exp_invt", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
 typedef enum {FREE_SLIP, DIRICHLET, NUM_BC_TYPES} BCType;
-const char *bcTypes[NUM_BC_TYPES+1] = {"fee_slip", "dirichlet", "unknown"};
+const char *bcTypes[NUM_BC_TYPES+1] = {"free_slip", "dirichlet", "unknown"};
+
+static PetscInt MEAN_EXP_TAG;
 
 typedef struct {
   PetscInt      debug;             /* The debugging level */
@@ -90,9 +93,10 @@ typedef struct {
   char          mantleBasename[PETSC_MAX_PATH_LEN];
   int           verts[3];          /* The number of vertices in each dimension for mantle problems */
   int           perm[3] ;          /* The permutation of axes for mantle problems */
-  /* Input distribution */
+  /* Input distribution and interpolation */
   PetscSF       pointSF;           /* The SF describing mesh distribution */
   Vec           Tinit;             /* The initial, serial non-dimensional temperature distribution */
+  PetscReal     meanExp;           /* The exponent to use for the power mean */
   /* Problem definition */
   BCType        bcType;            /* The type of boundary conditions */
   RheologyType  muTypePre;         /* The type of rheology for the main problem */
@@ -1445,10 +1449,15 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->muType          = CONSTANT;
   options->solType         = BASIC;
   options->mantleBasename[0] = '\0';
+  options->verts[0]        = 0;
+  options->verts[1]        = 0;
+  options->verts[2]        = 0;
   options->cdm             = NULL;
   options->pointSF         = NULL;
   options->Tinit           = NULL;
+  options->meanExp         = 1.0;
 
+  ierr = PetscObjectComposedDataRegister(&MEAN_EXP_TAG);CHKERRQ(ierr);
   ierr = PetscOptionsBegin(comm, "", "Variable-Viscosity Stokes Problem Options", "DMPLEX");CHKERRQ(ierr);
   ierr = PetscOptionsInt("-debug", "The debugging level", "ex79.c", options->debug, &options->debug, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsBool("-show_error", "Output the error for verification", "ex79.c", options->showError, &options->showError, NULL);CHKERRQ(ierr);
@@ -1473,6 +1482,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex79.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
   options->solType = (SolutionType) sol;
   ierr = PetscOptionsString("-mantle_basename", "The basename for mantle files", "ex79.c", options->mantleBasename, options->mantleBasename, sizeof(options->mantleBasename), NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsReal("-mean_exp", "The exponent to use for the power mean for the coarse temperature (Arith = 1, Geom -> 0, Harmonic = -1)", "ex79.c", options->meanExp, &options->meanExp, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
   PetscFunctionReturn(0);
 }
