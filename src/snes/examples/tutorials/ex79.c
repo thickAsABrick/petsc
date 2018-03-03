@@ -2485,6 +2485,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
   ierr = DMSetDS(dm, prob);CHKERRQ(ierr);
   if (user->coarsen) {
     cdm = user->cdm;
+    user->cdm = NULL;
     for (c = 0; c < user->coarsen; ++c) {
       ierr = DMPlexSetRefinementUniform(cdm, PETSC_TRUE);CHKERRQ(ierr);
       ierr = DMRefine(cdm, PetscObjectComm((PetscObject) cdm), &rdm);CHKERRQ(ierr);
@@ -2502,6 +2503,31 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       ierr = DMDestroy(&cdm);CHKERRQ(ierr);
       ierr = TempViewFromOptions(rdm, "-rdm_aux_view", "-rtemp_vec_view");CHKERRQ(ierr);
       cdm  = rdm;
+    }
+    ierr = PetscObjectCompose((PetscObject) rdm, "cdmAux", NULL);CHKERRQ(ierr);
+    ierr = PetscObjectCompose((PetscObject) rdm, "cA", NULL);CHKERRQ(ierr);
+    ierr = DMDestroy(&dm);CHKERRQ(ierr);
+    dm     = rdm;
+    *newdm = dm;
+    /* The previous loop used injection on the temperature, but we probably want smoothing */
+    for (c = 0; c < user->coarsen; ++c) {
+      DM  rtdm, ctdm;
+      Vec rT,   cT, Rscale;
+      Mat In;
+
+      ierr = DMGetCoarseDM(rdm, &cdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) rdm, "dmAux", (PetscObject *) &rtdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) rdm, "A",     (PetscObject *) &rT);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) cdm, "dmAux", (PetscObject *) &ctdm);CHKERRQ(ierr);
+      ierr = PetscObjectQuery((PetscObject) cdm, "A",     (PetscObject *) &cT);CHKERRQ(ierr);
+      ierr = DMSetCoarseDM(rtdm, ctdm);CHKERRQ(ierr);
+      ierr = DMCreateInterpolation(ctdm, rtdm, &In, &Rscale);CHKERRQ(ierr);
+      ierr = MatMultTranspose(In, rT, cT);CHKERRQ(ierr);
+      ierr = VecPointwiseMult(cT, cT, Rscale);CHKERRQ(ierr);
+      ierr = MatDestroy(&In);CHKERRQ(ierr);
+      ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
+      ierr = TempViewFromOptions(cdm, "-sdm_aux_view", "-stemp_vec_view");CHKERRQ(ierr);
+      rdm  = cdm;
     }
   }
   if (user->refine) {
