@@ -52,6 +52,14 @@ Citcom input:
   Z is depth, count bottom to top
 */
 
+/*
+3 levels
+./ex79 -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8 -dm_view hdf5:mantle.h5 -temp_view hdf5:mantle.h5::append -solution_view hdf5:mantle.h5::append -viscosity_view hdf5:mantle.h5::append -dm_s_l0_view hdf5:mantle0.h5 -temp_s_l0_view hdf5:mantle0.h5::append -dm_s_l1_view hdf5:mantle1.h5 -temp_s_l1_view hdf5:mantle1.h5::append -dm_s_l2_view hdf5:mantle2.h5 -temp_s_l2_view hdf5:mantle2.h5::append -dm_s_l3_view hdf5:mantle3.h5 -temp_s_l3_view hdf5:mantle3.h5::append -mean_exp -1.5
+
+3 levels and just adding in the different coarse levels
+./ex79 -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8 -temp_s_l0_view hdf5:mantle0.h5::append -temp_s_l1_view hdf5:mantle1.h5::append -temp_s_l2_view hdf5:mantle2.h5::append -temp_s_l3_view hdf5:mantle3.h5::append -mean_exp -1
+*/
+
 #include <petscdmplex.h>
 #include <petscsnes.h>
 #include <petscds.h>
