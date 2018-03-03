@@ -13,7 +13,7 @@ constrained to have zero integral over the domain.
 
 To produce nice output, use
 
-  -dm_view hdf5:mantle.h5 -sol_vec_view hdf5:mantle.h5::append -initial_vec_view hdf5:mantle.h5::append -temp_fine_view hdf5:mantle.h5::append -viscosity_vec_view hdf5:mantle.h5::append
+  -dm_view hdf5:mantle.h5 -solution_view hdf5:mantle.h5::append -initial_view hdf5:mantle.h5::append -temp_fine_view hdf5:mantle.h5::append -viscosity_view hdf5:mantle.h5::append
 
 and to get fields at each solver iterate
 
@@ -269,6 +269,14 @@ static PetscErrorCode dynamic_pressure(PetscInt dim, PetscReal time, const Petsc
 
   u[0] = P_d * (R_E*R_E / (mu0*kappa));
   return 0;
+}
+
+static void ConstantViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
+{
+  f0[0] = constants[0];
 }
 
 /* The second invariant of a tensor, according to mathematicians:
@@ -2572,13 +2580,9 @@ PetscErrorCode MatMultTransposePowerMean_SeqAIJ(Mat A, Vec xx, Vec yy)
     }
     for (j = 0; j < n; ++j) {
       y[idx[j]] += v[j]*PetscPowScalarReal(xi, p);
-      PetscPrintf(PETSC_COMM_SELF, "1/y[%D]: 1/%g = %g\n", idx[j], PetscPowScalarReal(xi, -p)/v[j], v[j]*PetscPowScalarReal(xi, p));
     }
   }
   ierr = PetscLogFlops(2.0*a->nz);CHKERRQ(ierr);
-  for (i = 0; i < A->cmap->n; ++i) {
-    PetscPrintf(PETSC_COMM_SELF, "y[%D]: %g\n", i, PetscPowScalarReal(y[i], 1.0/p));
-  }
   ierr = VecRestoreArrayRead(xx, &x);CHKERRQ(ierr);
   ierr = VecRestoreArray(yy, &y);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -2656,7 +2660,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       ierr = DMGlobalToLocalEnd(ctdm,   cTg, INSERT_VALUES, cT);CHKERRQ(ierr);
       ierr = MatDestroy(&In);CHKERRQ(ierr);
       ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
-      ierr = TempViewFromOptions(cdm, tempName, "s_l%D", c);CHKERRQ(ierr);
+      ierr = TempViewFromOptions(cdm, tempName, "s_l%D", user->coarsen-c-1);CHKERRQ(ierr);
       rdm  = cdm;
     }
   }
@@ -2748,7 +2752,7 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   PetscErrorCode ierr;
 
   PetscFunctionBeginUser;
-  ierr = PetscOptionsHasName(NULL, NULL, "-viscosity_vec_view", &flg);CHKERRQ(ierr);
+  ierr = PetscOptionsHasName(NULL, NULL, "-viscosity_view", &flg);CHKERRQ(ierr);
   if (!flg) PetscFunctionReturn(0);
   ierr = VecGetDM(u, &dm);CHKERRQ(ierr);
   ierr = DMGetDimension(dm, &dim);CHKERRQ(ierr);
@@ -2770,13 +2774,14 @@ static PetscErrorCode OutputViscosity(Vec u, AppCtx *user)
   ierr = DMGetGlobalVector(dmVisc, &mu);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) mu, "Viscosity");CHKERRQ(ierr);
   switch (user->muType) {
+  case CONSTANT:    funcs[0] = ConstantViscosityf0;break;
   case DIFFUSION:   funcs[0] = DiffusionCreepViscosityf0;break;
   case DISLOCATION: funcs[0] = DislocationCreepViscosityf0;break;
   case COMPOSITE:   funcs[0] = CompositeViscosityf0;break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid rheology type %d (%s)", (PetscInt) user->muType, rheologyTypes[PetscMin(user->muType, NUM_RHEOLOGY_TYPES)]);
   }
   ierr = DMProjectField(dmVisc, 0.0, u, funcs, INSERT_VALUES, mu);CHKERRQ(ierr);
-  ierr = VecViewFromOptions(mu, NULL, "-viscosity_vec_view");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(mu, NULL, "-viscosity_view");CHKERRQ(ierr);
   ierr = DMRestoreGlobalVector(dmVisc, &mu);CHKERRQ(ierr);
   ierr = DMDestroy(&dmVisc);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -2832,7 +2837,7 @@ int main(int argc, char **argv)
   ierr = PetscDSGetConstants(prob, NULL, (const PetscScalar **) &ctxs[1]);CHKERRQ(ierr);
   ierr = DMProjectFunction(dm, 0.0, user.exactFuncs, ctxs, INSERT_ALL_VALUES, u);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Exact Solution");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(u, NULL, "-exact_vec_view");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(u, NULL, "-exact_view");CHKERRQ(ierr);
   ierr = VecDot(nullVec, u, &pint);CHKERRQ(ierr);
   ierr = PetscPrintf(PETSC_COMM_WORLD, "Integral of pressure for exact solution: %g\n",(double) (PetscAbsScalar(pint) < 1.0e-14 ? 0.0 : PetscRealPart(pint)));CHKERRQ(ierr);
   ierr = DMSNESCheckFromOptions(snes, u, user.exactFuncs, ctxs);CHKERRQ(ierr);
@@ -2840,7 +2845,7 @@ int main(int argc, char **argv)
   ierr = DMProjectFunction(dm, 0.0, user.initialGuess, ctxs, INSERT_VALUES, u);CHKERRQ(ierr);
   ierr = MatNullSpaceRemove(nullSpace, u);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Initial Solution");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(u, NULL, "-initial_vec_view");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(u, NULL, "-initial_view");CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Solution");CHKERRQ(ierr);
   if (user.solTypePre != NONE) {
     PetscInt dim;
@@ -2866,12 +2871,12 @@ int main(int argc, char **argv)
     ierr = DMProjectFunction(dm, 0.0, user.exactFuncs, ctxs, INSERT_ALL_VALUES, r);CHKERRQ(ierr);
     ierr = VecAXPY(r, -1.0, u);CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) r, "Solution Error");CHKERRQ(ierr);
-    ierr = VecViewFromOptions(r, NULL, "-error_vec_view");CHKERRQ(ierr);
+    ierr = VecViewFromOptions(r, NULL, "-error_view");CHKERRQ(ierr);
     ierr = DMRestoreGlobalVector(dm, &r);CHKERRQ(ierr);
   }
   ierr = OutputViscosity(u, &user);CHKERRQ(ierr);
   ierr = PetscObjectSetName((PetscObject) u, "Computed Solution");CHKERRQ(ierr);
-  ierr = VecViewFromOptions(u, NULL, "-sol_vec_view");CHKERRQ(ierr);
+  ierr = VecViewFromOptions(u, NULL, "-solution_view");CHKERRQ(ierr);
 
   ierr = VecDestroy(&nullVec);CHKERRQ(ierr);
   ierr = MatNullSpaceDestroy(&nullSpace);CHKERRQ(ierr);
