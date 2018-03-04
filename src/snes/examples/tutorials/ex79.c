@@ -3067,8 +3067,8 @@ int main(int argc, char **argv)
    -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
-    suffix: uf4_q1p0_constant_lev_4_mg_asm
-    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
+    suffix: uf4_q1p0_diffusion_lev_4_mg_asm
+    args: -mu_type diffusion -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
  -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
  -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
  -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
