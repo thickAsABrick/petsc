@@ -2608,6 +2608,7 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
   if (user->coarsen) {
     cdm = user->cdm;
     user->cdm = NULL;
+    ierr = DMSetDS(cdm, prob);CHKERRQ(ierr);
     for (c = 0; c < user->coarsen; ++c) {
       ierr = DMPlexSetRefinementUniform(cdm, PETSC_TRUE);CHKERRQ(ierr);
       ierr = DMRefine(cdm, PetscObjectComm((PetscObject) cdm), &rdm);CHKERRQ(ierr);
@@ -2995,16 +2996,36 @@ int main(int argc, char **argv)
 
   test:
     suffix: uf16_q1p0_constant_lev_2
-    args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -coarsen 1 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
+ -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+ -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+ -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+ -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+ -pc_type fieldsplit -pc_fieldsplit_diag_use_amat -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 \
+   -fieldsplit_velocity_pc_type lu -fieldsplit_velocity_ksp_rtol 1e-8 \
+   -fieldsplit_pressure_pc_type lu -fieldsplit_pressure_ksp_rtol 1e-8 -fieldsplit_pressure_ksp_converged_reason
 
   test:
-    suffix: uf4_q1p0_constant_lev_4
-    args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    suffix: uf16_q1p0_constant_lev_2_mg
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
+ -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+ -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+ -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+ -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+ -pc_type mg -pc_mg_levels 2 \
+ -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+ -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+   -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
+   -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf16_q1p0_constant_lev_2_p2
     nsize: 2
     args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -coarsen 1 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+
+  test:
+    suffix: uf4_q1p0_constant_lev_4
+    args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
     suffix: uf16_q2q1_constant_jac_check
