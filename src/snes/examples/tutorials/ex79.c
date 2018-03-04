@@ -1523,6 +1523,7 @@ static PetscErrorCode TempViewFromOptions(DM dm, const char tempName[], const ch
   ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase ? optbase : "", &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "dmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "A",     (PetscObject *) &T);CHKERRQ(ierr);
+  if (!tdm) PetscFunctionReturn(0);
   ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-dm_view" : "-dm_%s_view", optmid);CHKERRQ(ierr);
   ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
@@ -1550,6 +1551,7 @@ static PetscErrorCode CellTempViewFromOptions(DM dm, const char tempName[], cons
   ierr = PetscVSNPrintf(optmid, PETSC_MAX_PATH_LEN, optbase ? optbase : "", &fullLength, Argp);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cdmAux", (PetscObject *) &tdm);CHKERRQ(ierr);
   ierr = PetscObjectQuery((PetscObject) dm, "cA",     (PetscObject *) &T);CHKERRQ(ierr);
+  if (!tdm) PetscFunctionReturn(0);
   ierr = PetscSNPrintf(opt, PETSC_MAX_PATH_LEN, !optbase ? "-dm_view" : "-dm_%s_view", optmid);CHKERRQ(ierr);
   ierr = DMViewFromOptions(tdm, NULL, opt);CHKERRQ(ierr);
   ierr = DMGetGlobalVector(tdm, &Tg);CHKERRQ(ierr);
@@ -1991,6 +1993,7 @@ static PetscErrorCode DistributeTemperature(DM dm, PetscBool cell, AppCtx *user)
     ierr = VecCreate(PETSC_COMM_SELF, &tmp);CHKERRQ(ierr);
     ierr = DMPlexDistributeField(dms, user->pointSF, secs, user->Tinit, secp, tmp);CHKERRQ(ierr);
     ierr = VecCopy(tmp, T);CHKERRQ(ierr);
+    ierr = PetscSectionDestroy(&secp);CHKERRQ(ierr);
     ierr = VecDestroy(&tmp);CHKERRQ(ierr);
 
     ierr = PetscSFDestroy(&user->pointSF);CHKERRQ(ierr);
@@ -2154,15 +2157,10 @@ static PetscErrorCode CreateMesh(MPI_Comm comm, AppCtx *user, DM *dm)
     ierr = MeshSplitLabels(*dm);CHKERRQ(ierr);
     ierr = MeshSplitLabels(user->cdm);CHKERRQ(ierr);
   }
+  if (user->cdm) {ierr = DMViewFromOptions(user->cdm, NULL, "-cdm_view");CHKERRQ(ierr);}
   ierr = DMViewFromOptions(*dm, NULL, "-rdm_view");CHKERRQ(ierr);
-  ierr = DMViewFromOptions(user->cdm, NULL, "-cdm_view");CHKERRQ(ierr);
-#if 0
-  if (user->coarsen) {ierr = CreateInitialCoarseTemperature(user->cdm, user);CHKERRQ(ierr);}
-  else               {ierr = CreateInitialTemperature(*dm, user);CHKERRQ(ierr);}
-#else
-  ierr = CreateInitialCoarseTemperature(user->cdm, user);CHKERRQ(ierr);
   ierr = CreateInitialTemperature(*dm, user);CHKERRQ(ierr);
-#endif
+  ierr = CreateInitialCoarseTemperature(user->cdm, user);CHKERRQ(ierr);
   /*
    Steps for coarsening:
    * Create coarse mesh matching temp mesh
@@ -2666,6 +2664,8 @@ static PetscErrorCode CreateHierarchy(DM dm, PetscDS prob, DM *newdm, AppCtx *us
       }
       ierr = DMGlobalToLocalBegin(ctdm, cTg, INSERT_VALUES, cT);CHKERRQ(ierr);
       ierr = DMGlobalToLocalEnd(ctdm,   cTg, INSERT_VALUES, cT);CHKERRQ(ierr);
+      ierr = DMRestoreGlobalVector(ctdm, &cTg);CHKERRQ(ierr);
+      ierr = DMRestoreGlobalVector(rtdm, &rTg);CHKERRQ(ierr);
       ierr = MatDestroy(&In);CHKERRQ(ierr);
       ierr = VecDestroy(&Rscale);CHKERRQ(ierr);
       ierr = TempViewFromOptions(cdm, tempName, "s_l%D", user->coarsen-c-1);CHKERRQ(ierr);
