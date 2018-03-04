@@ -3025,10 +3025,10 @@ int main(int argc, char **argv)
 
   test:
     suffix: uf4_q1p0_constant_lev_4
-    args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
+    args: -mu_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -coarsen 3 -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
-    suffix: uf16_q1p0_constant_lev_4_mg
+    suffix: uf4_q1p0_constant_lev_4_mg
     args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
  -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
  -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
@@ -3041,12 +3041,38 @@ int main(int argc, char **argv)
    -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
-    suffix: uf16_q1p0_constant_lev_4_mg_gamg
+    suffix: uf4_q1p0_constant_lev_4_mg_asm
     args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
  -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
  -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+ -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+ -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+ -pc_type mg -pc_mg_levels 4 \
+ -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+ -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+   -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_pc_type asm -mg_levels_fieldsplit_velocity_pc_asm_local_blocks 2 -mg_levels_fieldsplit_velocity_sub_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 -mg_levels_fieldsplit_velocity_ksp_max_it_no 30 -mg_levels_fieldsplit_velocity_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_ksp_monitor_no \
+   -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 30 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+
+  test:
+    suffix: uf16_q1p0_diffusion_lev_4_mg
+    args: -mu_type diffusion -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
+ -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+ -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+ -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+ -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+ -pc_type mg -pc_mg_levels 4 \
+ -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+ -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+   -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
+   -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+
+  test:
+    suffix: uf4_q1p0_constant_lev_4_mg_asm
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
+ -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+ -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+ -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+ -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
  -pc_type mg -pc_mg_levels 4 \
  -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
  -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
