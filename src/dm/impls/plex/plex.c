@@ -299,6 +299,7 @@ PetscErrorCode VecView_Plex_Local(Vec v, PetscViewer viewer)
 
     ierr = DMGetDefaultSection(dm, &section);CHKERRQ(ierr);
     ierr = DMPlexGetFieldType_Internal(dm, section, PETSC_DETERMINE, &pStart, &pEnd, &ft);CHKERRQ(ierr);
+    ierr = PetscObjectReference((PetscObject) v);CHKERRQ(ierr);  /* viewer drops reference */
     ierr = PetscViewerVTKAddField(viewer, (PetscObject) dm, DMPlexVTKWriteAll, ft, (PetscObject) v);CHKERRQ(ierr);
   } else if (ishdf5) {
 #if defined(PETSC_HAVE_HDF5)
@@ -338,7 +339,7 @@ PetscErrorCode VecView_Plex(Vec v, PetscViewer viewer)
     Vec         locv;
     const char *name;
 
-    ierr = DMCreateLocalVector(dm, &locv);CHKERRQ(ierr);
+    ierr = DMGetLocalVector(dm, &locv);CHKERRQ(ierr);
     ierr = PetscObjectGetName((PetscObject) v, &name);CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) locv, name);CHKERRQ(ierr);
     ierr = DMGlobalToLocalBegin(dm, v, INSERT_VALUES, locv);CHKERRQ(ierr);
@@ -347,6 +348,7 @@ PetscErrorCode VecView_Plex(Vec v, PetscViewer viewer)
     ierr = DMPlexInsertBoundaryValues(dm, PETSC_TRUE, locv, time, NULL, NULL, NULL);CHKERRQ(ierr);
     ierr = PetscViewerGLVisSetSnapId(viewer, num);CHKERRQ(ierr);
     ierr = VecView_Plex_Local(locv, viewer);CHKERRQ(ierr);
+    ierr = DMRestoreLocalVector(dm, &locv);CHKERRQ(ierr);
   } else if (ishdf5) {
 #if defined(PETSC_HAVE_HDF5)
     ierr = VecView_Plex_HDF5_Internal(v, viewer);CHKERRQ(ierr);
@@ -357,7 +359,7 @@ PetscErrorCode VecView_Plex(Vec v, PetscViewer viewer)
     Vec         locv;
     const char *name;
 
-    ierr = DMCreateLocalVector(dm, &locv);CHKERRQ(ierr);
+    ierr = DMGetLocalVector(dm, &locv);CHKERRQ(ierr);
     ierr = PetscObjectGetName((PetscObject) v, &name);CHKERRQ(ierr);
     ierr = PetscObjectSetName((PetscObject) locv, name);CHKERRQ(ierr);
     ierr = DMGlobalToLocalBegin(dm, v, INSERT_VALUES, locv);CHKERRQ(ierr);
@@ -365,6 +367,7 @@ PetscErrorCode VecView_Plex(Vec v, PetscViewer viewer)
     ierr = DMGetOutputSequenceNumber(dm, NULL, &time);CHKERRQ(ierr);
     ierr = DMPlexInsertBoundaryValues(dm, PETSC_TRUE, locv, time, NULL, NULL, NULL);CHKERRQ(ierr);
     ierr = VecView_Plex_Local(locv, viewer);CHKERRQ(ierr);
+    ierr = DMRestoreLocalVector(dm, &locv);CHKERRQ(ierr);
   } else {
     if (isseq) {ierr = VecView_Seq(v, viewer);CHKERRQ(ierr);}
     else       {ierr = VecView_MPI(v, viewer);CHKERRQ(ierr);}
