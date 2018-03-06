@@ -159,8 +159,10 @@ static PetscErrorCode PetscDSView_Ascii(PetscDS prob, PetscViewer viewer)
       if (prob->adjacency[f*2+1]) {ierr = PetscViewerASCIIPrintf(viewer, " (adj FEM)");CHKERRQ(ierr);}
       else                        {ierr = PetscViewerASCIIPrintf(viewer, " (adj FUNKY)");CHKERRQ(ierr);}
     }
-    ierr = PetscQuadratureGetData(q, NULL, &Nqc, &Nq, NULL, NULL);CHKERRQ(ierr);
-    ierr = PetscViewerASCIIPrintf(viewer, " (Nq %D Nqc %D)", Nq, Nqc);CHKERRQ(ierr);
+    if (q) {
+      ierr = PetscQuadratureGetData(q, NULL, &Nqc, &Nq, NULL, NULL);CHKERRQ(ierr);
+      ierr = PetscViewerASCIIPrintf(viewer, " (Nq %D Nqc %D)", Nq, Nqc);CHKERRQ(ierr);
+    }
     ierr = PetscViewerASCIIPrintf(viewer, "\n");CHKERRQ(ierr);
     if (format == PETSC_VIEWER_ASCII_INFO_DETAIL) {
       if (id == PETSCFE_CLASSID)      {ierr = PetscFEView((PetscFE) obj, viewer);CHKERRQ(ierr);}
