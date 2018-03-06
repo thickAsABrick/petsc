@@ -34,22 +34,84 @@ static PetscErrorCode PCApply_PBJacobi_1(PC pc,Vec x,Vec y)
   PetscFunctionReturn(0);
 }
 
+PETSC_STATIC_INLINE void MatMult_2(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[2]*x[1];
+  y[1] = A[1]*x[0] + A[3]*x[1];
+}
+
+PETSC_STATIC_INLINE void MatMult_3(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[3]*x[1] + A[6]*x[2];
+  y[1] = A[1]*x[0] + A[4]*x[1] + A[7]*x[2];
+  y[2] = A[2]*x[0] + A[5]*x[1] + A[8]*x[2];
+}
+
+PETSC_STATIC_INLINE void MatMult_4(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[4]*x[1] + A[8]*x[2]  + A[12]*x[3];
+  y[1] = A[1]*x[0] + A[5]*x[1] + A[9]*x[2]  + A[13]*x[3];
+  y[2] = A[2]*x[0] + A[6]*x[1] + A[10]*x[2] + A[14]*x[3];
+  y[3] = A[3]*x[0] + A[7]*x[1] + A[11]*x[2] + A[15]*x[3];
+}
+
+PETSC_STATIC_INLINE void MatMult_5(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[5]*x[1] + A[10]*x[2] + A[15]*x[3] + A[20]*x[4];
+  y[1] = A[1]*x[0] + A[6]*x[1] + A[11]*x[2] + A[16]*x[3] + A[21]*x[4];
+  y[2] = A[2]*x[0] + A[7]*x[1] + A[12]*x[2] + A[17]*x[3] + A[22]*x[4];
+  y[3] = A[3]*x[0] + A[8]*x[1] + A[13]*x[2] + A[18]*x[3] + A[23]*x[4];
+  y[4] = A[4]*x[0] + A[9]*x[1] + A[14]*x[2] + A[19]*x[3] + A[24]*x[4];
+}
+
+PETSC_STATIC_INLINE void MatMult_6(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[6]*x[1]  + A[12]*x[2]  + A[18]*x[3] + A[24]*x[4] + A[30]*x[5];
+  y[1] = A[1]*x[0] + A[7]*x[1]  + A[13]*x[2]  + A[19]*x[3] + A[25]*x[4] + A[31]*x[5];
+  y[2] = A[2]*x[0] + A[8]*x[1]  + A[14]*x[2]  + A[20]*x[3] + A[26]*x[4] + A[32]*x[5];
+  y[3] = A[3]*x[0] + A[9]*x[1]  + A[15]*x[2]  + A[21]*x[3] + A[27]*x[4] + A[33]*x[5];
+  y[4] = A[4]*x[0] + A[10]*x[1] + A[16]*x[2]  + A[22]*x[3] + A[28]*x[4] + A[34]*x[5];
+  y[5] = A[5]*x[0] + A[11]*x[1] + A[17]*x[2]  + A[23]*x[3] + A[29]*x[4] + A[35]*x[5];
+}
+
+PETSC_STATIC_INLINE void MatMult_7(const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  y[0] = A[0]*x[0] + A[7]*x[1]  + A[14]*x[2]  + A[21]*x[3] + A[28]*x[4] + A[35]*x[5] + A[42]*x[6];
+  y[1] = A[1]*x[0] + A[8]*x[1]  + A[15]*x[2]  + A[22]*x[3] + A[29]*x[4] + A[36]*x[5] + A[43]*x[6];
+  y[2] = A[2]*x[0] + A[9]*x[1]  + A[16]*x[2]  + A[23]*x[3] + A[30]*x[4] + A[37]*x[5] + A[44]*x[6];
+  y[3] = A[3]*x[0] + A[10]*x[1] + A[17]*x[2]  + A[24]*x[3] + A[31]*x[4] + A[38]*x[5] + A[45]*x[6];
+  y[4] = A[4]*x[0] + A[11]*x[1] + A[18]*x[2]  + A[25]*x[3] + A[32]*x[4] + A[39]*x[5] + A[46]*x[6];
+  y[5] = A[5]*x[0] + A[12]*x[1] + A[19]*x[2]  + A[26]*x[3] + A[33]*x[4] + A[40]*x[5] + A[47]*x[6];
+  y[6] = A[6]*x[0] + A[13]*x[1] + A[20]*x[2]  + A[27]*x[3] + A[34]*x[4] + A[41]*x[5] + A[48]*x[6];
+}
+
+PETSC_STATIC_INLINE void MatMult_N(PetscInt N, const MatScalar *A, const PetscScalar *x, PetscScalar *y)
+{
+  PetscInt i, j;
+
+  for (i = 0; i < N; ++i) {
+    PetscScalar rowsum = 0.;
+    for (j = 0; j < N; ++j) {
+      rowsum += A[i+j*N] * x[j];
+    }
+    y[i] = rowsum;
+  }
+}
+
 static PetscErrorCode PCApply_PBJacobi_2(PC pc,Vec x,Vec y)
 {
   PC_PBJacobi     *jac = (PC_PBJacobi*)pc->data;
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0        = xx[2*i]; x1 = xx[2*i+1];
-    yy[2*i]   = diag[0]*x0 + diag[2]*x1;
-    yy[2*i+1] = diag[1]*x0 + diag[3]*x1;
+    MatMult_2(diag, &xx[2*i], &yy[2*i]);
     diag     += 4;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
@@ -63,19 +125,15 @@ static PetscErrorCode PCApply_PBJacobi_3(PC pc,Vec x,Vec y)
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,x2,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0 = xx[3*i]; x1 = xx[3*i+1]; x2 = xx[3*i+2];
-
-    yy[3*i]   = diag[0]*x0 + diag[3]*x1 + diag[6]*x2;
-    yy[3*i+1] = diag[1]*x0 + diag[4]*x1 + diag[7]*x2;
-    yy[3*i+2] = diag[2]*x0 + diag[5]*x1 + diag[8]*x2;
-    diag     += 9;
+    MatMult_3(diag, &xx[3*i], &yy[3*i]);
+    diag += 9;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecRestoreArray(y,&yy);CHKERRQ(ierr);
@@ -88,20 +146,15 @@ static PetscErrorCode PCApply_PBJacobi_4(PC pc,Vec x,Vec y)
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,x2,x3,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0 = xx[4*i]; x1 = xx[4*i+1]; x2 = xx[4*i+2]; x3 = xx[4*i+3];
-
-    yy[4*i]   = diag[0]*x0 + diag[4]*x1 + diag[8]*x2  + diag[12]*x3;
-    yy[4*i+1] = diag[1]*x0 + diag[5]*x1 + diag[9]*x2  + diag[13]*x3;
-    yy[4*i+2] = diag[2]*x0 + diag[6]*x1 + diag[10]*x2 + diag[14]*x3;
-    yy[4*i+3] = diag[3]*x0 + diag[7]*x1 + diag[11]*x2 + diag[15]*x3;
-    diag     += 16;
+    MatMult_4(diag, &xx[4*i], &yy[4*i]);
+    diag += 16;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecRestoreArray(y,&yy);CHKERRQ(ierr);
@@ -114,21 +167,15 @@ static PetscErrorCode PCApply_PBJacobi_5(PC pc,Vec x,Vec y)
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,x2,x3,x4,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0 = xx[5*i]; x1 = xx[5*i+1]; x2 = xx[5*i+2]; x3 = xx[5*i+3]; x4 = xx[5*i+4];
-
-    yy[5*i]   = diag[0]*x0 + diag[5]*x1 + diag[10]*x2  + diag[15]*x3 + diag[20]*x4;
-    yy[5*i+1] = diag[1]*x0 + diag[6]*x1 + diag[11]*x2  + diag[16]*x3 + diag[21]*x4;
-    yy[5*i+2] = diag[2]*x0 + diag[7]*x1 + diag[12]*x2 + diag[17]*x3 + diag[22]*x4;
-    yy[5*i+3] = diag[3]*x0 + diag[8]*x1 + diag[13]*x2 + diag[18]*x3 + diag[23]*x4;
-    yy[5*i+4] = diag[4]*x0 + diag[9]*x1 + diag[14]*x2 + diag[19]*x3 + diag[24]*x4;
-    diag     += 25;
+    MatMult_5(diag, &xx[5*i], &yy[5*i]);
+    diag += 25;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecRestoreArray(y,&yy);CHKERRQ(ierr);
@@ -141,22 +188,15 @@ static PetscErrorCode PCApply_PBJacobi_6(PC pc,Vec x,Vec y)
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,x2,x3,x4,x5,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0 = xx[6*i]; x1 = xx[6*i+1]; x2 = xx[6*i+2]; x3 = xx[6*i+3]; x4 = xx[6*i+4]; x5 = xx[6*i+5];
-
-    yy[6*i]   = diag[0]*x0 + diag[6]*x1  + diag[12]*x2  + diag[18]*x3 + diag[24]*x4 + diag[30]*x5;
-    yy[6*i+1] = diag[1]*x0 + diag[7]*x1  + diag[13]*x2  + diag[19]*x3 + diag[25]*x4 + diag[31]*x5;
-    yy[6*i+2] = diag[2]*x0 + diag[8]*x1  + diag[14]*x2  + diag[20]*x3 + diag[26]*x4 + diag[32]*x5;
-    yy[6*i+3] = diag[3]*x0 + diag[9]*x1  + diag[15]*x2  + diag[21]*x3 + diag[27]*x4 + diag[33]*x5;
-    yy[6*i+4] = diag[4]*x0 + diag[10]*x1 + diag[16]*x2  + diag[22]*x3 + diag[28]*x4 + diag[34]*x5;
-    yy[6*i+5] = diag[5]*x0 + diag[11]*x1 + diag[17]*x2  + diag[23]*x3 + diag[29]*x4 + diag[35]*x5;
-    diag     += 36;
+    MatMult_6(diag, &xx[6*i], &yy[6*i]);
+    diag += 36;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecRestoreArray(y,&yy);CHKERRQ(ierr);
@@ -169,23 +209,15 @@ static PetscErrorCode PCApply_PBJacobi_7(PC pc,Vec x,Vec y)
   PetscErrorCode  ierr;
   PetscInt        i,m = jac->mbs;
   const MatScalar *diag = jac->diag;
-  PetscScalar     x0,x1,x2,x3,x4,x5,x6,*yy;
+  PetscScalar       *yy;
   const PetscScalar *xx;
 
   PetscFunctionBegin;
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    x0 = xx[7*i]; x1 = xx[7*i+1]; x2 = xx[7*i+2]; x3 = xx[7*i+3]; x4 = xx[7*i+4]; x5 = xx[7*i+5]; x6 = xx[7*i+6];
-
-    yy[7*i]   = diag[0]*x0 + diag[7]*x1  + diag[14]*x2  + diag[21]*x3 + diag[28]*x4 + diag[35]*x5 + diag[42]*x6;
-    yy[7*i+1] = diag[1]*x0 + diag[8]*x1  + diag[15]*x2  + diag[22]*x3 + diag[29]*x4 + diag[36]*x5 + diag[43]*x6;
-    yy[7*i+2] = diag[2]*x0 + diag[9]*x1  + diag[16]*x2  + diag[23]*x3 + diag[30]*x4 + diag[37]*x5 + diag[44]*x6;
-    yy[7*i+3] = diag[3]*x0 + diag[10]*x1 + diag[17]*x2  + diag[24]*x3 + diag[31]*x4 + diag[38]*x5 + diag[45]*x6;
-    yy[7*i+4] = diag[4]*x0 + diag[11]*x1 + diag[18]*x2  + diag[25]*x3 + diag[32]*x4 + diag[39]*x5 + diag[46]*x6;
-    yy[7*i+5] = diag[5]*x0 + diag[12]*x1 + diag[19]*x2  + diag[26]*x3 + diag[33]*x4 + diag[40]*x5 + diag[47]*x6;
-    yy[7*i+6] = diag[6]*x0 + diag[13]*x1 + diag[20]*x2  + diag[27]*x3 + diag[34]*x4 + diag[41]*x5 + diag[48]*x6;
-    diag     += 49;
+    MatMult_7(diag, &xx[7*i], &yy[7*i]);
+    diag += 49;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecRestoreArray(y,&yy);CHKERRQ(ierr);
@@ -196,7 +228,7 @@ static PetscErrorCode PCApply_PBJacobi_N(PC pc,Vec x,Vec y)
 {
   PC_PBJacobi       *jac = (PC_PBJacobi*)pc->data;
   PetscErrorCode    ierr;
-  PetscInt          i,ib,jb;
+  PetscInt          i;
   const PetscInt    m = jac->mbs;
   const PetscInt    bs = jac->bs;
   const MatScalar   *diag = jac->diag;
@@ -207,13 +239,7 @@ static PetscErrorCode PCApply_PBJacobi_N(PC pc,Vec x,Vec y)
   ierr = VecGetArrayRead(x,&xx);CHKERRQ(ierr);
   ierr = VecGetArray(y,&yy);CHKERRQ(ierr);
   for (i=0; i<m; i++) {
-    for (ib=0; ib<bs; ib++){
-      PetscScalar rowsum = 0;
-      for (jb=0; jb<bs; jb++){
-        rowsum += diag[ib+jb*bs] * xx[bs*i+jb];
-      }
-      yy[bs*i+ib] = rowsum;
-    }
+    MatMult_N(bs, diag, &xx[bs*i], &yy[bs*i]);
     diag += bs*bs;
   }
   ierr = VecRestoreArrayRead(x,&xx);CHKERRQ(ierr);
