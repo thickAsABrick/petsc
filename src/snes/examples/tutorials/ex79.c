@@ -74,26 +74,27 @@ Citcom input:
 
 typedef enum {NONE, BASIC, ANALYTIC_0, NUM_SOLUTION_TYPES} SolutionType;
 const char *solutionTypes[NUM_SOLUTION_TYPES+1] = {"none", "basic", "analytic_0", "unknown"};
-typedef enum {CONSTANT, LINEAR_T, EXP_T, EXP_INVT, TEST, TEST2, TEST3, TEST4, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
+typedef enum {CONSTANT, LINEAR_T, EXP_T, EXP_INVT, QUADRATIC_U, QUADRATIC_GRAD_U, EPS_II, EPS_II_N, TEST5, TEST6, TEST7, DIFFUSION, DISLOCATION, COMPOSITE, NUM_RHEOLOGY_TYPES} RheologyType;
 /*
-  constant:    mu = 1
-  linear_t:    mu = 2 - T
-  exp_t:       mu = 2 - exp(T)
-  exp_invt:    mu = 1 + exp(1/(1 + T))
-  test:        mu = 1/2 |u|^2
-  test2:       mu = 1/2 |u_x|^2_F
-  test3:       mu = eps_II
-  test4:       mu = eps^{(1-n)/n}_II
-  test5:       mu = mu_ds*mu_ds/mu0
-  test6:       mu = mu_df/(mu_ds + mu_df)
-  test7:       mu = broken
-  diffusion:   mu = mu_df
-  dislocation: mu = mu_ds
-  composite:   mu = 2.0*mu_df*mu_ds/(mu_df + mu_ds)
+  constant:         mu = 1
+  linear_t:         mu = 2 - T
+  exp_t:            mu = 2 - exp(T)
+  exp_invt:         mu = 1 + exp(1/(1 + T))
+  quadratic_u:      mu = 1/2 |u|^2
+  quadratic_grad_u: mu = 1/2 |u_x|^2_F
+  eps_II:           mu = eps_II
+  eps_II_n:         mu = eps^{(1-n)/n}_II
+  test5:            mu = mu_ds*mu_ds/mu0
+  test6:            mu = mu_df/(mu_ds + mu_df)
+  test7:            mu = broken
+  diffusion:        mu = mu_df
+  dislocation:      mu = mu_ds
+  composite:        mu = 2.0*mu_df*mu_ds/(mu_df + mu_ds)
  */
-const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "linear_t", "exp_t", "exp_invt", "test", "test2", "test3", "test4", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
+const char *rheologyTypes[NUM_RHEOLOGY_TYPES+1] = {"constant", "linear_t", "exp_t", "exp_invt", "quadratic_u", "quadratic_grad_u", "eps_II", "eps_II_n", "test5", "test6", "test7", "diffusion", "dislocation", "composite", "unknown"};
 typedef enum {FREE_SLIP, DIRICHLET, NUM_BC_TYPES} BCType;
 const char *bcTypes[NUM_BC_TYPES+1] = {"free_slip", "dirichlet", "unknown"};
+enum {C_MU_0, C_R_E, C_KAPPA, C_DELTA_T, C_RHO_0, C_BETA, C_ALPHA, C_T_AD_GRAD, C_N_DS, C_MU_MIN, C_MU_MAX, C_RA_SCALE, NUM_CONSTANTS};
 
 static PetscInt MEAN_EXP_TAG;
 
@@ -120,6 +121,7 @@ typedef struct {
   SolutionType  solTypePre;        /* The type of solution for the presolve */
   RheologyType  muType;            /* The type of rheology for the main problem */
   SolutionType  solType;           /* The type of solution for the main solve */
+  PetscBool     useBounds;         /* Enable bounds on the viscosity */
   PetscErrorCode (**exactFuncs)(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar u[], void *ctx);
   PetscErrorCode (**initialGuess)(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void* ctx);
 } AppCtx;
@@ -263,9 +265,9 @@ static PetscScalar LithostaticPressureDerivativeR(PetscInt dim, const PetscReal 
 static PetscErrorCode dynamic_pressure(PetscInt dim, PetscReal time, const PetscReal x[], PetscInt Nf, PetscScalar *u, void *ctx)
 {
   const PetscScalar *constants = (const PetscScalar *) ctx;
-  const PetscReal    mu0       = constants[0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
-  const PetscReal    R_E       = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal    kappa     = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal    mu0       = constants[C_MU_0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
+  const PetscReal    R_E       = constants[C_R_E]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal    kappa     = constants[C_KAPPA]; /* Thermal diffusivity m^2/s  : Time Scale */
 #ifdef SPHERICAL
   const PetscReal    r         = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
 #else
@@ -273,7 +275,7 @@ static PetscErrorCode dynamic_pressure(PetscInt dim, PetscReal time, const Petsc
 #endif
   const PetscReal    z         = R_E*r;        /* Height m */
   const PetscReal    gradP     = 905.0;        /* Pressure gradient in Pa/m, should be rho0*g*alpha*DeltaT, I get 905 */
-  const PetscReal    P_d       = constants[8] * gradP*z;
+  const PetscReal    P_d       = constants[C_RA_SCALE] * gradP*z;
 
   /*
    Pa/m = kg /m^2 s^2
@@ -289,7 +291,7 @@ static void ConstantViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
-  f0[0] = constants[0];
+  f0[0] = constants[C_MU_0];
 }
 
 /* The second invariant of a tensor, according to mathematicians:
@@ -358,7 +360,8 @@ static PetscReal SecondInvariantStress(PetscInt dim, const PetscScalar u_x[])
 #endif
 
 /* Assumes that u_x[], x[], and T are dimensionless */
-static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
+static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal n_ds,
+                            PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds)
 {
 #ifdef SPHERICAL
   const PetscReal r       = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
@@ -372,7 +375,6 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
   const PetscReal d_df_um = 1e4;                                 /* Grain size micrometers in the upper mantle (mum) */
   const PetscReal d_df_lm = 4e4;                                 /* Grain size micrometers in the lower mantle (mum) */
   const PetscReal n_df    = 1.0;                                 /* Stress exponent, dimensionless */
-  const PetscReal n_ds    = 3.5;                                 /* Stress exponent, dimensionless */
   const PetscReal C_OH    = 1000.0;                              /* OH concentration, H/10^6 Si, dimensionless */
   const PetscReal E_df    = 335.0;                               /* Activation energy, kJ/mol */
   const PetscReal E_ds    = 480.0;                               /* Activation energy, kJ/mol */
@@ -407,26 +409,23 @@ static void MantleViscosity(PetscInt dim, const PetscScalar u_x[], const PetscRe
 
 static PetscReal DiffusionCreepViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
-  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
+  const PetscReal R_E      = constants[C_R_E];       /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[C_KAPPA];     /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[C_DELTA_T];   /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[C_RHO_0];     /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[C_BETA];      /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
+  const PetscReal mu_min   = constants[C_MU_MIN];    /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu_max   = constants[C_MU_MAX];    /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  PetscReal       eps_II;                            /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;                  /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_df;
   //if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
   //if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
-#ifdef SIMPLIFY
-  return mu;
-#else
   return PetscMin(mu_max, PetscMax(mu_min, mu));
-#endif
 }
 static void DiffusionCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
@@ -438,18 +437,19 @@ static void DiffusionCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 
 static PetscReal DislocationCreepViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
-  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
+  const PetscReal R_E      = constants[C_R_E];       /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[C_KAPPA];     /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[C_DELTA_T];   /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[C_RHO_0];     /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[C_BETA];      /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
+  const PetscReal mu_min   = constants[C_MU_MIN];    /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu_max   = constants[C_MU_MAX];    /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  PetscReal       eps_II;                            /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;                  /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = mu_ds;
   //if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
   if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
@@ -466,22 +466,23 @@ static void DislocationCreepViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAu
 
 static PetscReal CompositeViscosity(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], const PetscReal constants[], PetscReal T)
 {
-  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
-  PetscReal       eps_II;                  /* Second invariant of strain rate, 1/s */
-  PetscReal       mu_df, mu_ds, mu;        /* Pa s = kg/(m s) */
+  const PetscReal R_E      = constants[C_R_E];       /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[C_KAPPA];     /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[C_DELTA_T];   /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[C_RHO_0];     /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[C_BETA];      /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
+  const PetscReal mu_min   = constants[C_MU_MIN];    /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu_max   = constants[C_MU_MAX];    /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
+  PetscReal       eps_II;                            /* Second invariant of strain rate, 1/s */
+  PetscReal       mu_df, mu_ds, mu;                  /* Pa s = kg/(m s) */
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = 2.0*mu_ds*mu_df/(mu_ds + mu_df);
   //PetscPrintf(PETSC_COMM_SELF, "Composite mu %g mu_df %g mu_ds %g, eps_II %g T %g\n", mu, mu_df, mu_ds, eps_II, T);
   //if (eps_II <= 0.0) PetscPrintf(PETSC_COMM_SELF, "EPS VIOLATION: (%g, %g)\n", x[0], x[1]);
-  if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
+  //if (mu < mu_min) PetscPrintf(PETSC_COMM_SELF, "MIN VIOLATION: %g < %g (%g, %g)\n", mu, mu_min, x[0], x[1]);
   //if (mu > mu_max) PetscPrintf(PETSC_COMM_SELF, "MAX VIOLATION: %g > %g (%g, %g)\n", mu, mu_max, x[0], x[1]);
   return PetscMin(mu_max, PetscMax(mu_min, mu));
 }
@@ -494,7 +495,8 @@ static void CompositeViscosityf0(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 }
 
 /* Assumes that u_x[], x[], and T are dimensionless */
-static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal dT_dr_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds, PetscReal *dmu_df_dr)
+static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], const PetscReal x[], PetscReal R_E, PetscReal kappa, PetscReal DeltaT, PetscReal rho0, PetscReal beta, PetscReal n_ds,
+                                       PetscReal dT_ad_dr, PetscReal T_nondim, PetscReal dT_dr_nondim, PetscReal *epsilon_II, PetscReal *mu_df, PetscReal *mu_ds, PetscReal *dmu_df_dr)
 {
 #ifdef SPHERICAL
   const PetscReal r       = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional radius */
@@ -509,7 +511,6 @@ static void MantleViscosityDerivativeR(PetscInt dim, const PetscScalar u_x[], co
   const PetscReal d_df_um = 1e4;                                 /* Grain size micrometers in the upper mantle (mum) */
   const PetscReal d_df_lm = 4e4;                                 /* Grain size micrometers in the lower mantle (mum) */
   const PetscReal n_df    = 1.0;                                 /* Stress exponent, dimensionless */
-  const PetscReal n_ds    = 3.5;                                 /* Stress exponent, dimensionless */
   const PetscReal C_OH    = 1000.0;                              /* OH concentration, H/10^6 Si, dimensionless */
   const PetscReal E_df    = 335.0;                               /* Activation energy, kJ/mol */
   const PetscReal E_ds    = 480.0;                               /* Activation energy, kJ/mol */
@@ -611,18 +612,19 @@ static void analytic_2d_0_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f0[])
 {
-  const PetscReal mu0      = constants[0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
-  const PetscReal R_E      = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa    = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT   = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0     = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal beta     = constants[5]; /* Adiabatic compressibility, 1/Pa */
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];      /* Mantle viscosity kg/(m s)  : Mass Scale */
+  const PetscReal R_E      = constants[C_R_E];       /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa    = constants[C_KAPPA];     /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT   = constants[C_DELTA_T];   /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0     = constants[C_RHO_0];     /* Mantle density kg/m^3 */
+  const PetscReal beta     = constants[C_BETA];      /* Adiabatic compressibility, 1/Pa */
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   PetscReal       T, dT_dr, eps_II, mu_df, mu_ds, dmu_df_dr;
 
   analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
   analytic_2d_0_dT_dr(dim, t, x, Nf, &dT_dr, NULL);
-  MantleViscosityDerivativeR(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, dT_dr, &eps_II, &mu_df, &mu_ds, &dmu_df_dr);
+  MantleViscosityDerivativeR(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, dT_dr, &eps_II, &mu_df, &mu_ds, &dmu_df_dr);
   f0[0] = 2.*mu_df/mu0 + 2.*dmu_df_dr*x[0]*(R_E/mu0) - 1.;
   f0[1] = 2.*mu_df/mu0 - 2.*dmu_df_dr*x[0]*(R_E/mu0) - 1.;
 }
@@ -692,10 +694,10 @@ static void stokes_momentum_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux,
     f1[c*dim+c] -= u[dim];
   }
 }
-static void stokes_momentum_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                 PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+static void stokes_momentum_quadratic_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                        PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   const PetscReal mu = 0.5*(u[0]*u[0] + u[1]*u[1]);
   PetscInt        c, d;
@@ -707,10 +709,10 @@ static void stokes_momentum_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
     f1[c*dim+c] -= u[dim];
   }
 }
-static void stokes_momentum_test2(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+static void stokes_momentum_quadratic_grad_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                             const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                             const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                             PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   const PetscReal mu = 0.5*(u_x[0]*u_x[0] + u_x[1]*u_x[1] + u_x[2]*u_x[2] + u_x[3]*u_x[3]);
   PetscInt        c, d;
@@ -722,23 +724,24 @@ static void stokes_momentum_test2(PetscInt dim, PetscInt Nf, PetscInt NfAux,
     f1[c*dim+c] -= u[dim];
   }
 }
-static void stokes_momentum_test3(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+static void stokes_momentum_eps_II(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II*(PetscSqr(R_E)/kappa);
 
   for (c = 0; c < dim; ++c) {
@@ -748,24 +751,24 @@ static void stokes_momentum_test3(PetscInt dim, PetscInt Nf, PetscInt NfAux,
     f1[c*dim+c] -= u[dim];
   }
 }
-static void stokes_momentum_test4(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                  const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                  const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                  PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
+static void stokes_momentum_eps_II_n(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                     const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                     const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                     PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS]; /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : PetscPowReal(eps_II*(PetscSqr(R_E)/kappa), (1.0 - n_ds)/n_ds);
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -779,19 +782,20 @@ static void stokes_momentum_test5(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (mu_ds*mu_ds/mu0)/mu0;
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -805,18 +809,19 @@ static void stokes_momentum_test6(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (mu_df/(mu_ds + mu_df));
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -830,19 +835,20 @@ static void stokes_momentum_test7(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                   PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        c, d;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II <= 0.0 ? 0.0 : (2.0*mu_ds*mu_df/(mu_ds + mu_df))/(1e17*mu0);
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
@@ -857,7 +863,7 @@ static void stokes_momentum_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
@@ -876,7 +882,7 @@ static void stokes_momentum_analytic_diffusion(PetscInt dim, PetscInt Nf, PetscI
   PetscInt  c, d;
 
   analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
-  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   for (c = 0; c < dim; ++c) {
     for (d = 0; d < dim; ++d) {
       f1[c*dim+d] = 0.5*mu * (u_x[c*dim+d] + u_x[d*dim+c]);
@@ -890,7 +896,7 @@ static void stokes_momentum_dislocation(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = DislocationCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = DislocationCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
@@ -906,7 +912,7 @@ static void stokes_momentum_composite(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                       PetscReal t, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar f1[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = CompositeViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = CompositeViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   PetscInt        c, d;
 
   for (c = 0; c < dim; ++c) {
@@ -935,16 +941,16 @@ static void f0_bouyancy(PetscInt dim, PetscInt Nf, PetscInt NfAux,
 #ifdef SPHERICAL
   const PetscReal r      = PetscSqrtReal(x[0]*x[0]+x[1]*x[1]+(dim>2 ? x[2]*x[2] : 0.0)); /* Nondimensional readius */
 #endif
-  const PetscReal mu0    = constants[0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
-  const PetscReal R_E    = constants[1]; /* Radius of the Earth m      : Length Scale */
-  const PetscReal kappa  = constants[2]; /* Thermal diffusivity m^2/s  : Time Scale */
-  const PetscReal DeltaT = constants[3]; /* Mantle temperature range K : Temperature Scale */
-  const PetscReal rho0   = constants[4]; /* Mantle density kg/m^3 */
-  const PetscReal alpha  = constants[6]; /* Coefficient of thermal expansivity K^{-1} */
+  const PetscReal mu0    = constants[C_MU_0]; /* Mantle viscosity kg/(m s)  : Mass Scale */
+  const PetscReal R_E    = constants[C_R_E]; /* Radius of the Earth m      : Length Scale */
+  const PetscReal kappa  = constants[C_KAPPA]; /* Thermal diffusivity m^2/s  : Time Scale */
+  const PetscReal DeltaT = constants[C_DELTA_T]; /* Mantle temperature range K : Temperature Scale */
+  const PetscReal rho0   = constants[C_RHO_0]; /* Mantle density kg/m^3 */
+  const PetscReal alpha  = constants[C_ALPHA]; /* Coefficient of thermal expansivity K^{-1} */
   const PetscReal T      = PetscRealPart(a[0]);
   const PetscReal g      = 9.8;    /* Acceleration due to gravity m/s^2 */
   const PetscReal Ra     = (rho0*g*alpha*DeltaT*PetscPowRealInt(R_E, 3))/(mu0*kappa);
-  const PetscReal f      = -constants[8] * Ra * T; /* Nondimensional body force */
+  const PetscReal f      = -constants[C_RA_SCALE] * Ra * T; /* Nondimensional body force */
   PetscInt        d;
 
 #ifdef SPHERICAL
@@ -1050,10 +1056,10 @@ static void stokes_momentum_vel_J_exp_invt(PetscInt dim, PetscInt Nf, PetscInt N
     }
   }
 }
-static void stokes_momentum_vel_J_mu_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                          const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                          const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                          PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g2[])
+static void stokes_momentum_vel_J_mu_quadratic_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                                 const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                                 const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                                 PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g2[])
 {
   PetscInt fc, gc, df;
 
@@ -1065,10 +1071,10 @@ static void stokes_momentum_vel_J_mu_test(PetscInt dim, PetscInt Nf, PetscInt Nf
     }
   }
 }
-static void stokes_momentum_vel_J_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                       const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                       const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                       PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+static void stokes_momentum_vel_J_quadratic_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                              const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                              const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                              PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
   const PetscReal mu  = 0.5*(u[0]*u[0] + u[1]*u[1]);
   PetscInt        fc, df;
@@ -1080,10 +1086,10 @@ static void stokes_momentum_vel_J_test(PetscInt dim, PetscInt Nf, PetscInt NfAux
     }
   }
 }
-static void stokes_momentum_vel_J_test2(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+static void stokes_momentum_vel_J_quadratic_grad_u(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                                   PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
   const PetscReal mu = 0.5*(u_x[0]*u_x[0] + u_x[1]*u_x[1] + u_x[2]*u_x[2] + u_x[3]*u_x[3]);
   PetscInt        fc, df, gc, dg;
@@ -1100,23 +1106,24 @@ static void stokes_momentum_vel_J_test2(PetscInt dim, PetscInt Nf, PetscInt NfAu
     }
   }
 }
-static void stokes_momentum_vel_J_test3(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+static void stokes_momentum_vel_J_eps_II(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                         const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   mu = eps_II*(PetscSqr(R_E)/kappa);
   for (fc = 0; fc < dim; ++fc) {
     for (df = 0; df < dim; ++df) {
@@ -1130,24 +1137,24 @@ static void stokes_momentum_vel_J_test3(PetscInt dim, PetscInt Nf, PetscInt NfAu
     }
   }
 }
-static void stokes_momentum_vel_J_test4(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                        const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                        const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                        PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
+static void stokes_momentum_vel_J_eps_II_n(PetscInt dim, PetscInt Nf, PetscInt NfAux,
+                                           const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
+                                           const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
+                                           PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : PetscPowReal(eps_II, (1.0 - n_ds)/n_ds);
   for (fc = 0; fc < dim; ++fc) {
@@ -1167,20 +1174,20 @@ static void stokes_momentum_vel_J_test5(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (mu_ds*mu_ds/mu0)/mu0;
   for (fc = 0; fc < dim; ++fc) {
@@ -1200,19 +1207,19 @@ static void stokes_momentum_vel_J_test6(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (mu_df/(mu_ds + mu_df));
   for (fc = 0; fc < dim; ++fc) {
@@ -1232,20 +1239,20 @@ static void stokes_momentum_vel_J_test7(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = eps_II <= 0.0 ? 0.0 : (2.0*mu_ds*mu_df/(mu_ds + mu_df))/(1e17*mu0);
   for (fc = 0; fc < dim; ++fc) {
@@ -1266,7 +1273,7 @@ static void stokes_momentum_vel_J_diffusion(PetscInt dim, PetscInt Nf, PetscInt 
                                             PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   PetscInt        cI, d;
 
   for (cI = 0; cI < dim; ++cI) {
@@ -1285,7 +1292,7 @@ static void stokes_momentum_vel_J_analytic_diffusion(PetscInt dim, PetscInt Nf, 
   PetscInt  cI, d;
 
   analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
-  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   for (cI = 0; cI < dim; ++cI) {
     for (d = 0; d < dim; ++d) {
       g3[((cI*dim+cI)*dim+d)*dim+d] += 0.5*mu; /*g3[cI, cI, d, d]*/
@@ -1298,22 +1305,22 @@ static void stokes_momentum_vel_J_dislocation(PetscInt dim, PetscInt Nf, PetscIn
                                               const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                               PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
+  const PetscReal mu_min   = constants[C_MU_MIN];    /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu_max   = constants[C_MU_MAX];    /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = PetscMin(mu_max, PetscMax(mu_min, mu_ds))/mu0;
   for (fc = 0; fc < dim; ++fc) {
@@ -1333,22 +1340,22 @@ static void stokes_momentum_vel_J_composite(PetscInt dim, PetscInt Nf, PetscInt 
                                             const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                             PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g3[])
 {
-  const PetscReal mu_max   = 5e24;         /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
-  const PetscReal mu_min   = 1e17;         /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
-  const PetscReal mu0      = constants[0];
-  const PetscReal R_E      = constants[1];
-  const PetscReal kappa    = constants[2];
-  const PetscReal DeltaT   = constants[3];
-  const PetscReal rho0     = constants[4];
-  const PetscReal beta     = constants[5];
-  const PetscReal dT_ad_dr = constants[7]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal mu0      = constants[C_MU_0];
+  const PetscReal R_E      = constants[C_R_E];
+  const PetscReal kappa    = constants[C_KAPPA];
+  const PetscReal DeltaT   = constants[C_DELTA_T];
+  const PetscReal rho0     = constants[C_RHO_0];
+  const PetscReal beta     = constants[C_BETA];
+  const PetscReal dT_ad_dr = constants[C_T_AD_GRAD]; /* Adiabatic temperature gradient, K/m */
+  const PetscReal n_ds     = constants[C_N_DS];      /* Stress exponentfor dislocation creep, dimensionless */
+  const PetscReal mu_min   = constants[C_MU_MIN];    /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+  const PetscReal mu_max   = constants[C_MU_MAX];    /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
   const PetscReal T        = PetscRealPart(a[0]);
-  const PetscReal n_ds     = 3.5;
   PetscReal       eps_II;           /* Second invariant of strain rate, 1/s */
   PetscReal       mu_df, mu_ds, mu; /* Pa s = kg/(m s) */
   PetscInt        fc, df, gc, dg;
 
-  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
+  MantleViscosity(dim, u_x, x, R_E, kappa, DeltaT, rho0, beta, n_ds, dT_ad_dr, T, &eps_II, &mu_df, &mu_ds);
   eps_II *= PetscSqr(R_E)/kappa;
   mu = (2.0*mu_ds*mu_df/(mu_ds + mu_df));
   mu = PetscMin(mu_max, PetscMax(mu_min, mu))/mu0;
@@ -1406,20 +1413,13 @@ static void stokes_identity_J_exp_invt(PetscInt dim, PetscInt Nf, PetscInt NfAux
   mu = 1.0 + PetscExpReal(1.0/(1.0 + T));
   g0[0] = 1.0/mu;
 }
-static void stokes_identity_J_test(PetscInt dim, PetscInt Nf, PetscInt NfAux,
-                                   const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
-                                   const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
-                                   PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
-{
-  g0[0] = 1.0;
-}
 static void stokes_identity_J_diffusion(PetscInt dim, PetscInt Nf, PetscInt NfAux,
                                         const PetscInt uOff[], const PetscInt uOff_x[], const PetscScalar u[], const PetscScalar u_t[], const PetscScalar u_x[],
                                         const PetscInt aOff[], const PetscInt aOff_x[], const PetscScalar a[], const PetscScalar a_t[], const PetscScalar a_x[],
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
 
   g0[0] = 1.0/mu;
 }
@@ -1431,7 +1431,7 @@ static void stokes_identity_J_analytic_diffusion(PetscInt dim, PetscInt Nf, Pets
   PetscReal T, mu;
 
   analytic_2d_0_T(dim, t, x, Nf, &T, NULL);
-  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  mu = DiffusionCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
   g0[0] = 1.0/mu;
 }
 static void stokes_identity_J_dislocation(PetscInt dim, PetscInt Nf, PetscInt NfAux,
@@ -1440,7 +1440,7 @@ static void stokes_identity_J_dislocation(PetscInt dim, PetscInt Nf, PetscInt Nf
                                           PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = DislocationCreepViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = DislocationCreepViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
 
   g0[0] = 1.0/mu;
 }
@@ -1450,7 +1450,7 @@ static void stokes_identity_J_composite(PetscInt dim, PetscInt Nf, PetscInt NfAu
                                         PetscReal t, PetscReal u_tShift, const PetscReal x[], PetscInt numConstants, const PetscScalar constants[], PetscScalar g0[])
 {
   const PetscReal T  = PetscRealPart(a[0]);
-  const PetscReal mu = CompositeViscosity(dim, u_x, x, constants, T)/constants[0];
+  const PetscReal mu = CompositeViscosity(dim, u_x, x, constants, T)/constants[C_MU_0];
 
   g0[0] = 1.0/mu;
 }
@@ -1473,6 +1473,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   options->solTypePre      = NONE;
   options->muType          = CONSTANT;
   options->solType         = BASIC;
+  options->useBounds       = PETSC_TRUE;
   options->mantleBasename[0] = '\0';
   options->verts[0]        = 0;
   options->verts[1]        = 0;
@@ -1506,6 +1507,7 @@ static PetscErrorCode ProcessOptions(MPI_Comm comm, AppCtx *options)
   sol  = options->solType;
   ierr = PetscOptionsEList("-sol_type", "Type of problem", "ex79.c", solutionTypes, NUM_SOLUTION_TYPES, solutionTypes[options->solType], &sol, NULL);CHKERRQ(ierr);
   options->solType = (SolutionType) sol;
+  ierr = PetscOptionsBool("-use_bounds", "Enable bounds on the viscosity", "ex79.c", options->useBounds, &options->useBounds, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsString("-mantle_basename", "The basename for mantle files", "ex79.c", options->mantleBasename, options->mantleBasename, sizeof(options->mantleBasename), NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-mean_exp", "The exponent to use for the power mean for the coarse temperature (Arith = 1, Geom -> 0, Harmonic = -1)", "ex79.c", options->meanExp, &options->meanExp, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();
@@ -2237,49 +2239,33 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
       ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_constant, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
-    case TEST:
-      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test);CHKERRQ(ierr);
+    case QUADRATIC_U:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_quadratic_u);CHKERRQ(ierr);
       ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, stokes_momentum_vel_J_mu_test,  stokes_momentum_vel_J_test);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, stokes_momentum_vel_J_mu_quadratic_u,  stokes_momentum_vel_J_quadratic_u);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
-    case TEST2:
-      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test2);CHKERRQ(ierr);
+    case QUADRATIC_GRAD_U:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_quadratic_grad_u);CHKERRQ(ierr);
       ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test2);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_quadratic_grad_u);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test2);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
-    case TEST3:
-      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test3);CHKERRQ(ierr);
+    case EPS_II:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_eps_II);CHKERRQ(ierr);
       ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test3);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_eps_II);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test3);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
-    case TEST4:
-      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test4);CHKERRQ(ierr);
+    case EPS_II_N:
+      ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_eps_II_n);CHKERRQ(ierr);
       ierr = PetscDSSetResidual(prob, 1, stokes_mass, f1_zero);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test4);CHKERRQ(ierr);
+      ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_eps_II_n);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test4);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
     case TEST5:
       ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test5);CHKERRQ(ierr);
@@ -2287,10 +2273,6 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
       ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test5);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test5);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
     case TEST6:
       ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test6);CHKERRQ(ierr);
@@ -2298,10 +2280,6 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
       ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test6);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test6);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
     case TEST7:
       ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_test7);CHKERRQ(ierr);
@@ -2309,10 +2287,6 @@ static PetscErrorCode SetupEquations(PetscDS prob, PetscInt dim, RheologyType mu
       ierr = PetscDSSetJacobian(prob, 0, 0, NULL, NULL, NULL,  stokes_momentum_vel_J_test7);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
       ierr = PetscDSSetJacobian(prob, 1, 0, NULL, stokes_mass_J, NULL,  NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 0, NULL, NULL, NULL, stokes_momentum_vel_J_test7);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 0, 1, NULL, NULL, stokes_momentum_pres_J, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 0, NULL, stokes_mass_J, NULL, NULL);CHKERRQ(ierr);
-      ierr = PetscDSSetJacobianPreconditioner(prob, 1, 1, stokes_identity_J_test, NULL, NULL, NULL);CHKERRQ(ierr);
       break;
     case DIFFUSION:
       ierr = PetscDSSetResidual(prob, 0, f0_bouyancy, stokes_momentum_diffusion);CHKERRQ(ierr);
@@ -2478,7 +2452,6 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
   break;
   default: SETERRQ2(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "Invalid boundary condition type %d (%s)", (PetscInt) user->bcType, bcTypes[PetscMin(user->bcType, NUM_BC_TYPES)]);
   }
-#define NUM_CONSTANTS 9
   /* Units */
   {
     /* TODO: Make these a bag */
@@ -2491,29 +2464,37 @@ static PetscErrorCode SetupProblem(PetscDS prob, PetscInt dim, AppCtx *user)
     PetscReal       kappa    = 1.0e-6;     /* Thermal diffusivity m^2/s  : Time Scale */
     PetscReal       DeltaT   = 1400;       /* Mantle temperature range K : Temperature Scale */
     PetscReal       dT_ad_dr = -3.e-4;     /* Adiabatic temperature gradient, K/m */
+    PetscReal       n_ds     = 3.5;        /* Stress exponentfor dislocation creep, dimensionless */
+    PetscReal       mu_min   = 1e17;       /* Minimum viscosity kg/(m s) : The model no longer applies in hotter mantle since it ignores melting */
+    PetscReal       mu_max   = 5e24;       /* Maximum viscosity kg/(m s) : The model no longer applies in colder lithosphere since it ignores brittle fracture */
     PetscReal       Ra;                    /* Rayleigh number */
-    PetscScalar     constants[NUM_CONSTANTS];
+    PetscScalar    *constants;
 
-    constants[0] = mu0;
-    constants[1] = R_E;
-    constants[2] = kappa;
-    constants[3] = DeltaT;
-    constants[4] = rho0;
-    constants[5] = beta;
-    constants[6] = alpha;
+    ierr = PetscMalloc1(NUM_CONSTANTS, &constants);CHKERRQ(ierr);
+    constants[C_MU_0]      = mu0;
+    constants[C_R_E]       = R_E;
+    constants[C_KAPPA]     = kappa;
+    constants[C_DELTA_T]   = DeltaT;
+    constants[C_RHO_0]     = rho0;
+    constants[C_BETA]      = beta;
+    constants[C_ALPHA]     = alpha;
 #ifdef SIMPLIFY
-    constants[7] = 0.0;
+    constants[C_T_AD_GRAD] = 0.0;
 #else
-    constants[7] = dT_ad_dr;
+    constants[C_T_AD_GRAD] = dT_ad_dr;
 #endif
-    constants[8] = 1.0;
+    constants[C_N_DS]      = n_ds;
+    constants[C_MU_MIN]    = mu_min;
+    constants[C_MU_MAX]    = mu_max;
+    constants[C_RA_SCALE]  = 1.0;
 
     Ra   = (rho0*g*alpha*DeltaT*PetscPowRealInt(R_E, 3))/(mu0*kappa);
-    ierr = PetscOptionsGetScalar(NULL, NULL, "-Ra_mult", &constants[8], NULL);CHKERRQ(ierr);
-    ierr = PetscPrintf(PETSC_COMM_WORLD, "Ra: %g\n", Ra * constants[8]);CHKERRQ(ierr);
+    ierr = PetscOptionsGetScalar(NULL, NULL, "-Ra_mult", &constants[C_RA_SCALE], NULL);CHKERRQ(ierr);
+    ierr = PetscPrintf(PETSC_COMM_WORLD, "Ra: %g\n", Ra * constants[C_RA_SCALE]);CHKERRQ(ierr);
     ierr = PetscDSSetConstants(prob, NUM_CONSTANTS, constants);CHKERRQ(ierr);
     /* ierr = DMPlexSetScale(dm, PETSC_UNIT_LENGTH, R_E);CHKERRQ(ierr);
      ierr = DMPlexSetScale(dm, PETSC_UNIT_TIME,   R_E*R_E/kappa);CHKERRQ(ierr); */
+    ierr = PetscFree(constants);CHKERRQ(ierr);
   }
   ierr = PetscDSSetFromOptions(prob);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -2912,14 +2893,54 @@ int main(int argc, char **argv)
     args: -mu_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9 -snes_err_if_not_converged 0
 
   test:
+    suffix: small_q1p0_quadratic_u_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type quadratic_u -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
+    suffix: small_q1p0_quadratic_grad_u_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type quadratic_grad_u -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
+    suffix: small_q1p0_eps_II_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type eps_II -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
+    suffix: small_q1p0_eps_II_n_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type eps_II_n -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
     suffix: small_q1p0_diffusion_jac_check
     filter: Error: egrep "Norm of matrix"
     args: -mu_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
+    suffix: small_q1p0_dislocation_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type dislocation -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
     suffix: small_q1p0_composite_jac_check
     filter: Error: egrep "Norm of matrix"
     args: -mu_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
+    suffix: small_q2q1_constant_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9 -snes_err_if_not_converged 0
+
+  test:
+    suffix: small_q2q1_diffusion_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+
+  test:
+    suffix: small_q2q1_composite_jac_check
+    filter: Error: egrep "Norm of matrix"
+    args: -mu_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
 
   test:
     suffix: small_q1p0_constant
@@ -2967,21 +2988,6 @@ int main(int argc, char **argv)
     args: -mu_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
-    suffix: uf16_q1p0_constant_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
-
-  test:
-    suffix: uf16_q1p0_diffusion_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
-
-  test:
-    suffix: uf16_q1p0_composite_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
-
-  test:
     suffix: uf16_q1p0_constant
     args: -sol_type constant -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
@@ -2990,38 +2996,37 @@ int main(int argc, char **argv)
     args: -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
 
   test:
-    suffix: uf16_q1p0_diffusion_gamg
-    nsize: 2
-    args: -mu_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -snes_atol 1e-12 -snes_rtol 1e-7 -ksp_rtol 1e-8 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_ksp_rtol 1e-8 -fieldsplit_velocity_pc_type gamg -fieldsplit_velocity_pc_gamg_bs 2 -fieldsplit_velocity_pc_gamg_threshold 0.05 -fieldsplit_velocity_mg_levels_pc_type bjacobi -fieldsplit_velocity_mg_levels_sub_pc_type sor -fieldsplit_velocity_mg_levels_sub_pc_sor_lits 4 -fieldsplit_velocity_ksp_converged_reason -fieldsplit_pressure_ksp_rtol 1e-4 -fieldsplit_pressure_pc_type gamg -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason
-
-  test:
     suffix: uf16_q1p0_composite
-    requires: broken
-    args: -sol_type composite -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 -snes_linesearch_monitor -snes_linesearch_maxstep 1e20 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_pressure_ksp_monitor_no -fieldsplit_pressure_ksp_converged_reason -snes_atol 1e-12 -ksp_rtol 1e-10 -fieldsplit_pressure_ksp_rtol 1e-8
-
-  test:
-    suffix: uf16_q1p0_constant_lev_2
-    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
- -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type fieldsplit -pc_fieldsplit_diag_use_amat -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 \
-   -fieldsplit_velocity_pc_type lu -fieldsplit_velocity_ksp_rtol 1e-8 \
-   -fieldsplit_pressure_pc_type lu -fieldsplit_pressure_ksp_rtol 1e-8 -fieldsplit_pressure_ksp_converged_reason
+    args: -mu_type diffusion -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
+      -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+      -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+      -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 \
+        -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+        -ksp_rtol 1e-5 -ksp_error_if_not_converged \
+          -ksp_monitor_true_residual -ksp_converged_reason \
+        -pc_type fieldsplit -pc_fieldsplit_diag_use_amat -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 \
+          -fieldsplit_velocity_ksp_type gmres -fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fieldsplit_velocity_ksp_monitor_no -fieldsplit_velocity_ksp_converged_reason \
+          -fieldsplit_velocity_pc_type mg -fieldsplit_velocity_pc_mg_levels 2 \
+            -fieldsplit_velocity_mg_levels_ksp_type gmres -fieldsplit_velocity_mg_levels_ksp_max_it 4 \
+              -fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fieldsplit_velocity_mg_levels_ksp_converged_reason_no \
+            -fieldsplit_velocity_mg_levels_pc_type pbjacobi -fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fieldsplit_pressure_ksp_error_if_not_converged 0 \
+          -fieldsplit_pressure_pc_type asm -fieldsplit_pressure_sub_pc_type ilu -fieldsplit_pressure_ksp_rtol 1e-4 -fieldsplit_pressure_ksp_max_it 20 \
+            -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf16_q1p0_constant_lev_2_mg
     args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
- -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type mg -pc_mg_levels 2 \
- -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
- -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
-   -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
-   -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+    -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 2 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
+      -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf16_q1p0_constant_lev_2_p2
@@ -3035,69 +3040,212 @@ int main(int argc, char **argv)
   test:
     suffix: uf4_q1p0_constant_lev_4_mg
     args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
- -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type mg -pc_mg_levels 4 \
- -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
- -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
-   -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
-   -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+    -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-10 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 4 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
+      -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf4_q1p0_constant_lev_4_mg_asm
     args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
- -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type mg -pc_mg_levels 4 \
- -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
- -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
-   -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_pc_type asm -mg_levels_fieldsplit_velocity_pc_asm_local_blocks 2 -mg_levels_fieldsplit_velocity_sub_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 -mg_levels_fieldsplit_velocity_ksp_max_it_no 30 -mg_levels_fieldsplit_velocity_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_ksp_monitor_no \
-   -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 30 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+    -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 4 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_pc_type asm -mg_levels_fieldsplit_velocity_pc_asm_blocks 4 -mg_levels_fieldsplit_velocity_sub_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 -mg_levels_fieldsplit_velocity_ksp_max_it_no 30 -mg_levels_fieldsplit_velocity_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_ksp_monitor_no \
+      -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 30 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
-    suffix: uf16_q1p0_diffusion_lev_4_mg
+    suffix: uf4_q1p0_constant_lev_4_mg_gamg_asm
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
+    -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_max_it 1 -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged_no -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_max_it 1 -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged_no -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 2 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_ksp_rtol 1e-4 -mg_levels_fieldsplit_velocity_ksp_max_it 2 -mg_levels_fieldsplit_velocity_pc_type gamg -mg_levels_fieldsplit_velocity_ksp_converged_reason \
+        -mg_levels_fieldsplit_velocity_mg_levels_ksp_type gmres -mg_levels_fieldsplit_velocity_mg_levels_ksp_max_it 3 \
+        -mg_levels_fieldsplit_velocity_mg_levels_pc_type asm -mg_levels_fieldsplit_velocity_mg_levels_pc_asm_blocks 100 -mg_levels_fieldsplit_velocity_mg_levels_sub_pc_type lu \
+        -mg_levels_fieldsplit_velocity_mg_levels_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_mg_levels_ksp_monitor_no \
+      -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-3 -mg_levels_fieldsplit_pressure_ksp_max_it 2 -mg_levels_fieldsplit_pressure_ksp_converged_reason -mg_levels_fieldsplit_pressure_ksp_monitor
+
+  test:
+    suffix: uf16_q1p0_constant_lev_2_fas
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf16 \
+    -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_rtol 1e-7 -snes_atol 1e-12 -snes_type fas -snes_fas_type full -snes_fas_levels 2 \
+    -snes_error_if_not_converged -snes_monitor -snes_converged_reason -snes_view \
+      -fas_levels_1_snes_type newtonls -fas_levels_1_snes_atol 1.0e-7 -fas_levels_1_snes_linesearch_maxstep 1e20 \
+      -fas_levels_1_snes_monitor -fas_levels_1_snes_converged_reason \
+        -fas_levels_1_ksp_monitor_true_residual -fas_levels_1_ksp_converged_reason \
+        -fas_levels_1_pc_type fieldsplit -fas_levels_1_pc_fieldsplit_diag_use_amat \
+        -fas_levels_1_pc_fieldsplit_type schur -fas_levels_1_pc_fieldsplit_schur_factorization_type full -fas_levels_1_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_1_fieldsplit_velocity_pc_type lu \
+          -fas_levels_1_fieldsplit_pressure_pc_type lu -fas_levels_1_fieldsplit_pressure_ksp_rtol 1e-8 \
+            -fas_levels_1_fieldsplit_pressure_ksp_monitor_no -fas_levels_1_fieldsplit_pressure_ksp_converged_reason \
+      -fas_coarse_snes_type newtonls -fas_coarse_snes_atol 1.0e-9 -fas_coarse_snes_linesearch_maxstep 1e20 \
+      -fas_coarse_snes_monitor -fas_coarse_snes_converged_reason \
+        -fas_coarse_ksp_type gmres -fas_coarse_pc_type svd
+
+  test:
+    suffix: small_q1p0_constant_lev_2_fas_simple
+    args: -mu_type constant -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 \
+    -simplex 0 -dm_plex_separate_marker -refine 1 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_max_it 1 -snes_rtol 1e-7 -snes_atol 1e-12 -snes_type fas -snes_fas_type kaskade -snes_fas_levels 2 \
+    -snes_error_if_not_converged -snes_monitor -snes_converged_reason -snes_view \
+      -fas_levels_1_snes_max_it 1 -fas_levels_1_snes_type newtonls -fas_levels_1_snes_linesearch_maxstep 1e20 -fas_levels_1_snes_linesearch_monitor \
+      -fas_levels_1_snes_monitor -fas_levels_1_snes_converged_reason \
+        -fas_levels_1_ksp_monitor_true_residual -fas_levels_1_ksp_converged_reason \
+        -fas_levels_1_pc_type fieldsplit -fas_levels_1_pc_fieldsplit_diag_use_amat \
+        -fas_levels_1_pc_fieldsplit_type schur -fas_levels_1_pc_fieldsplit_schur_factorization_type full -fas_levels_1_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_1_fieldsplit_velocity_ksp_type gmres -fas_levels_1_fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fas_levels_1_fieldsplit_velocity_ksp_monitor -fas_levels_1_fieldsplit_velocity_ksp_converged_reason \
+          -fas_levels_1_fieldsplit_velocity_pc_type mg -fas_levels_1_fieldsplit_velocity_pc_mg_levels 2 \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_type gmres -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_max_it 3 \
+              -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_converged_reason \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_pc_type pbjacobi -fas_levels_1_fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fas_levels_1_fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fas_levels_1_fieldsplit_pressure_pc_type asm -fas_levels_1_fieldsplit_pressure_sub_pc_type ilu -fas_levels_1_fieldsplit_pressure_ksp_rtol 1e-8 \
+            -fas_levels_1_fieldsplit_pressure_ksp_monitor_no -fas_levels_1_fieldsplit_pressure_ksp_converged_reason \
+      -fas_coarse_snes_max_it 1 -fas_coarse_snes_type newtonls -fas_coarse_snes_atol 1.0e-9 -fas_coarse_snes_linesearch_maxstep 1e20 \
+      -fas_coarse_snes_monitor -fas_coarse_snes_converged_reason \
+        -fas_coarse_ksp_monitor_true_residual -fas_coarse_ksp_converged_reason \
+        -fas_coarse_pc_type fieldsplit -fas_coarse_pc_fieldsplit_diag_use_amat \
+        -fas_coarse_pc_fieldsplit_type schur -fas_coarse_pc_fieldsplit_schur_factorization_type full -fas_coarse_pc_fieldsplit_schur_precondition a11 \
+          -fas_coarse_fieldsplit_velocity_pc_type lu \
+          -fas_coarse_fieldsplit_pressure_pc_type lu -fas_coarse_fieldsplit_pressure_ksp_rtol 1e-10 \
+            -fas_coarse_fieldsplit_pressure_ksp_monitor_no -fas_coarse_fieldsplit_pressure_ksp_converged_reason
+
+  test:
+    suffix: uf4_q1p0_constant_lev_2_fas_simple
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
+    -simplex 0 -dm_plex_separate_marker -coarsen 1 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_max_it 10 -snes_rtol 1e-5 -snes_atol 1e-12 -snes_type fas -snes_fas_type kaskade -snes_fas_levels 2 \
+    -snes_error_if_not_converged -snes_monitor -snes_converged_reason -snes_view \
+      -fas_levels_1_snes_max_it 1 -fas_levels_1_snes_max_linear_solve_fail 10 -fas_levels_1_snes_type newtonls -fas_levels_1_snes_linesearch_maxstep 1e20 -fas_levels_1_snes_linesearch_monitor \
+      -fas_levels_1_snes_monitor -fas_levels_1_snes_converged_reason \
+        -fas_levels_1_ksp_max_it 3 -fas_levels_1_ksp_error_if_not_converged 0 \
+          -fas_levels_1_ksp_monitor_true_residual -fas_levels_1_ksp_converged_reason \
+        -fas_levels_1_pc_type fieldsplit -fas_levels_1_pc_fieldsplit_diag_use_amat \
+        -fas_levels_1_pc_fieldsplit_type schur -fas_levels_1_pc_fieldsplit_schur_factorization_type full -fas_levels_1_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_1_fieldsplit_velocity_ksp_type gmres -fas_levels_1_fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fas_levels_1_fieldsplit_velocity_ksp_monitor_no -fas_levels_1_fieldsplit_velocity_ksp_converged_reason \
+          -fas_levels_1_fieldsplit_velocity_pc_type mg -fas_levels_1_fieldsplit_velocity_pc_mg_levels 2 \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_type gmres -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_max_it 4 \
+              -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_converged_reason_no \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_pc_type pbjacobi -fas_levels_1_fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fas_levels_1_fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fas_levels_1_fieldsplit_pressure_pc_type asm -fas_levels_1_fieldsplit_pressure_sub_pc_type ilu \
+            -fas_levels_1_fieldsplit_pressure_ksp_rtol 1e-4 -fas_levels_1_fieldsplit_pressure_ksp_max_it 20 \
+            -fas_levels_1_fieldsplit_pressure_ksp_monitor -fas_levels_1_fieldsplit_pressure_ksp_converged_reason \
+      -fas_coarse_snes_max_it 1 -fas_coarse_snes_type newtonls -fas_coarse_snes_atol 1.0e-9 -fas_coarse_snes_linesearch_maxstep 1e20 \
+      -fas_coarse_snes_monitor -fas_coarse_snes_converged_reason \
+        -fas_coarse_ksp_monitor_true_residual -fas_coarse_ksp_converged_reason \
+        -fas_coarse_pc_type fieldsplit -fas_coarse_pc_fieldsplit_diag_use_amat \
+        -fas_coarse_pc_fieldsplit_type schur -fas_coarse_pc_fieldsplit_schur_factorization_type full -fas_coarse_pc_fieldsplit_schur_precondition a11 \
+          -fas_coarse_fieldsplit_velocity_pc_type lu -fas_coarse_fieldsplit_velocity_pc_use_amat -fas_coarse_fieldsplit_velocity_pc_factor_mat_solver_package superlu_dist \
+            -fas_coarse_fieldsplit_velocity_ksp_monitor_no -fas_coarse_fieldsplit_velocity_ksp_converged_reason_no \
+          -fas_coarse_fieldsplit_pressure_pc_type lu -fas_coarse_fieldsplit_pressure_pc_factor_mat_solver_package superlu_dist -fas_coarse_fieldsplit_pressure_ksp_rtol 1e-10 \
+            -fas_coarse_fieldsplit_pressure_ksp_monitor_no -fas_coarse_fieldsplit_pressure_ksp_converged_reason
+
+  test:
+    suffix: uf4_q1p0_constant_lev_4_fas_simple
+    args: -mu_type constant -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
+    -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_max_it 10 -snes_rtol 1e-5 -snes_atol 1e-12 -snes_type fas -snes_fas_type kaskade -snes_fas_levels 4 \
+    -snes_error_if_not_converged -snes_monitor -snes_converged_reason -snes_view \
+      -fas_levels_3_snes_max_it 1 -fas_levels_3_snes_max_linear_solve_fail 10 -fas_levels_3_snes_type newtonls -fas_levels_3_snes_linesearch_maxstep 1e20 -fas_levels_3_snes_linesearch_monitor \
+      -fas_levels_3_snes_monitor -fas_levels_3_snes_converged_reason \
+        -fas_levels_3_ksp_max_it 3 -fas_levels_3_ksp_error_if_not_converged 0 \
+          -fas_levels_3_ksp_monitor_true_residual -fas_levels_3_ksp_converged_reason \
+        -fas_levels_3_pc_type fieldsplit -fas_levels_3_pc_fieldsplit_diag_use_amat \
+        -fas_levels_3_pc_fieldsplit_type schur -fas_levels_3_pc_fieldsplit_schur_factorization_type full -fas_levels_3_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_3_fieldsplit_velocity_ksp_type gmres -fas_levels_3_fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fas_levels_3_fieldsplit_velocity_ksp_monitor_no -fas_levels_3_fieldsplit_velocity_ksp_converged_reason \
+          -fas_levels_3_fieldsplit_velocity_pc_type mg -fas_levels_3_fieldsplit_velocity_pc_mg_levels 2 \
+            -fas_levels_3_fieldsplit_velocity_mg_levels_ksp_type gmres -fas_levels_3_fieldsplit_velocity_mg_levels_ksp_max_it 4 \
+              -fas_levels_3_fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fas_levels_3_fieldsplit_velocity_mg_levels_ksp_converged_reason_no \
+            -fas_levels_3_fieldsplit_velocity_mg_levels_pc_type pbjacobi -fas_levels_3_fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fas_levels_3_fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fas_levels_3_fieldsplit_pressure_pc_type asm -fas_levels_3_fieldsplit_pressure_sub_pc_type ilu \
+            -fas_levels_3_fieldsplit_pressure_ksp_rtol 1e-4 -fas_levels_3_fieldsplit_pressure_ksp_max_it 20 \
+            -fas_levels_3_fieldsplit_pressure_ksp_monitor -fas_levels_3_fieldsplit_pressure_ksp_converged_reason \
+      -fas_levels_2_snes_max_it 1 -fas_levels_2_snes_max_linear_solve_fail 10 -fas_levels_2_snes_type newtonls -fas_levels_2_snes_linesearch_maxstep 1e20 -fas_levels_2_snes_linesearch_monitor \
+      -fas_levels_2_snes_monitor -fas_levels_2_snes_converged_reason \
+        -fas_levels_2_ksp_max_it 3 -fas_levels_2_ksp_error_if_not_converged 0 \
+          -fas_levels_2_ksp_monitor_true_residual -fas_levels_2_ksp_converged_reason \
+        -fas_levels_2_pc_type fieldsplit -fas_levels_2_pc_fieldsplit_diag_use_amat \
+        -fas_levels_2_pc_fieldsplit_type schur -fas_levels_2_pc_fieldsplit_schur_factorization_type full -fas_levels_2_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_2_fieldsplit_velocity_ksp_type gmres -fas_levels_2_fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fas_levels_2_fieldsplit_velocity_ksp_monitor_no -fas_levels_2_fieldsplit_velocity_ksp_converged_reason \
+          -fas_levels_2_fieldsplit_velocity_pc_type mg -fas_levels_2_fieldsplit_velocity_pc_mg_levels 2 \
+            -fas_levels_2_fieldsplit_velocity_mg_levels_ksp_type gmres -fas_levels_2_fieldsplit_velocity_mg_levels_ksp_max_it 4 \
+              -fas_levels_2_fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fas_levels_2_fieldsplit_velocity_mg_levels_ksp_converged_reason_no \
+            -fas_levels_2_fieldsplit_velocity_mg_levels_pc_type pbjacobi -fas_levels_2_fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fas_levels_2_fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fas_levels_2_fieldsplit_pressure_pc_type asm -fas_levels_2_fieldsplit_pressure_sub_pc_type ilu \
+            -fas_levels_2_fieldsplit_pressure_ksp_rtol 1e-4 -fas_levels_2_fieldsplit_pressure_ksp_max_it 20 \
+            -fas_levels_2_fieldsplit_pressure_ksp_monitor -fas_levels_2_fieldsplit_pressure_ksp_converged_reason \
+      -fas_levels_1_snes_max_it 1 -fas_levels_1_snes_max_linear_solve_fail 10 -fas_levels_1_snes_type newtonls -fas_levels_1_snes_linesearch_maxstep 1e20 -fas_levels_1_snes_linesearch_monitor \
+      -fas_levels_1_snes_monitor -fas_levels_1_snes_converged_reason \
+        -fas_levels_1_ksp_max_it 3 -fas_levels_1_ksp_error_if_not_converged 0 \
+          -fas_levels_1_ksp_monitor_true_residual -fas_levels_1_ksp_converged_reason \
+        -fas_levels_1_pc_type fieldsplit -fas_levels_1_pc_fieldsplit_diag_use_amat \
+        -fas_levels_1_pc_fieldsplit_type schur -fas_levels_1_pc_fieldsplit_schur_factorization_type full -fas_levels_1_pc_fieldsplit_schur_precondition a11 \
+          -fas_levels_1_fieldsplit_velocity_ksp_type gmres -fas_levels_1_fieldsplit_velocity_ksp_rtol 1e-8 \
+            -fas_levels_1_fieldsplit_velocity_ksp_monitor_no -fas_levels_1_fieldsplit_velocity_ksp_converged_reason \
+          -fas_levels_1_fieldsplit_velocity_pc_type mg -fas_levels_1_fieldsplit_velocity_pc_mg_levels 2 \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_type gmres -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_max_it 4 \
+              -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_monitor_true_residual_no -fas_levels_1_fieldsplit_velocity_mg_levels_ksp_converged_reason_no \
+            -fas_levels_1_fieldsplit_velocity_mg_levels_pc_type pbjacobi -fas_levels_1_fieldsplit_velocity_mg_levels_pc_pbjacobi_variable -fas_levels_1_fieldsplit_velocity_mg_levels_pc_use_amat \
+          -fas_levels_1_fieldsplit_pressure_pc_type asm -fas_levels_1_fieldsplit_pressure_sub_pc_type ilu \
+            -fas_levels_1_fieldsplit_pressure_ksp_rtol 1e-4 -fas_levels_1_fieldsplit_pressure_ksp_max_it 20 \
+            -fas_levels_1_fieldsplit_pressure_ksp_monitor -fas_levels_1_fieldsplit_pressure_ksp_converged_reason \
+      -fas_coarse_snes_max_it 1 -fas_coarse_snes_type newtonls -fas_coarse_snes_atol 1.0e-9 -fas_coarse_snes_linesearch_maxstep 1e20 \
+      -fas_coarse_snes_monitor -fas_coarse_snes_converged_reason \
+        -fas_coarse_ksp_monitor_true_residual -fas_coarse_ksp_converged_reason \
+        -fas_coarse_pc_type fieldsplit -fas_coarse_pc_fieldsplit_diag_use_amat \
+        -fas_coarse_pc_fieldsplit_type schur -fas_coarse_pc_fieldsplit_schur_factorization_type full -fas_coarse_pc_fieldsplit_schur_precondition a11 \
+          -fas_coarse_fieldsplit_velocity_pc_type lu -fas_coarse_fieldsplit_velocity_pc_use_amat -fas_coarse_fieldsplit_velocity_pc_factor_mat_solver_package superlu_dist \
+            -fas_coarse_fieldsplit_velocity_ksp_monitor_no -fas_coarse_fieldsplit_velocity_ksp_converged_reason_no \
+          -fas_coarse_fieldsplit_pressure_pc_type lu -fas_coarse_fieldsplit_pressure_pc_factor_mat_solver_package superlu_dist -fas_coarse_fieldsplit_pressure_ksp_rtol 1e-10 \
+            -fas_coarse_fieldsplit_pressure_ksp_monitor_no -fas_coarse_fieldsplit_pressure_ksp_converged_reason
+
+  test:
+    suffix: uf4_q1p0_diffusion_lev_4_mg
     args: -mu_type diffusion -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
- -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type mg -pc_mg_levels 4 \
- -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
- -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
-   -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
-   -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
+    -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 4 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 \
+      -mg_levels_fieldsplit_pressure_pc_type lu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 100 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf4_q1p0_diffusion_lev_4_mg_asm
     args: -mu_type diffusion -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 \
- -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
- -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
- -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
- -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
- -pc_type mg -pc_mg_levels 4 \
- -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
- -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
-   -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_pc_type asm -mg_levels_fieldsplit_velocity_pc_asm_local_blocks 2 -mg_levels_fieldsplit_velocity_sub_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 -mg_levels_fieldsplit_velocity_ksp_max_it_no 30 -mg_levels_fieldsplit_velocity_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_ksp_monitor_no \
-   -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 30 -mg_levels_fieldsplit_pressure_ksp_converged_reason
-
-  test:
-    suffix: uf16_q2q1_constant_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type constant -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 2 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
-
-  test:
-    suffix: uf16_q2q1_diffusion_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type diffusion -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
-
-  test:
-    suffix: uf16_q2q1_composite_jac_check
-    filter: Error: egrep "Norm of matrix"
-    args: -sol_type composite -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -byte_swap 0 -dm_plex_separate_marker -vel_petscspace_order 2 -pres_petscspace_order 1 -temp_petscspace_order 1 -dm_view -snes_type test -petscds_jac_pre 0 -Ra_mult 1e-9
+    -simplex 0 -dm_plex_separate_marker -coarsen 3 -dm_view \
+    -vel_petscspace_order 1 -pres_petscspace_order 0 -temp_petscspace_order 1 \
+    -snes_rtol 1e-7 -snes_atol 1e-12 -snes_error_if_not_converged -snes_linesearch_maxstep 1e20 -snes_monitor -snes_linesearch_monitor -snes_converged_reason -snes_view \
+    -ksp_type richardson -ksp_richardson_self_scale -ksp_norm_type unpreconditioned -ksp_rtol 1e-8 -ksp_error_if_not_converged -ksp_monitor_true_residual -ksp_converged_reason \
+    -pc_type mg -pc_mg_levels 4 \
+    -mg_levels_ksp_type gmres -mg_levels_ksp_max_it 1 -mg_levels_ksp_monitor_true_residual -mg_levels_ksp_converged_reason \
+    -mg_levels_pc_type fieldsplit -mg_levels_pc_fieldsplit_diag_use_amat -mg_levels_pc_fieldsplit_type schur -mg_levels_pc_fieldsplit_schur_factorization_type full -mg_levels_pc_fieldsplit_schur_precondition a11 \
+      -mg_levels_fieldsplit_velocity_ksp_type gmres -mg_levels_fieldsplit_velocity_pc_type asm -mg_levels_fieldsplit_velocity_pc_asm_local_blocks 2 -mg_levels_fieldsplit_velocity_sub_pc_type lu -mg_levels_fieldsplit_velocity_ksp_rtol 1e-8 -mg_levels_fieldsplit_velocity_ksp_max_it_no 30 -mg_levels_fieldsplit_velocity_ksp_converged_reason_no -mg_levels_fieldsplit_velocity_ksp_monitor_no \
+      -mg_levels_fieldsplit_pressure_pc_type bjacobi -mg_levels_fieldsplit_pressure_sub_pc_type ilu -mg_levels_fieldsplit_pressure_ksp_rtol 1e-8 -mg_levels_fieldsplit_pressure_ksp_max_it 30 -mg_levels_fieldsplit_pressure_ksp_converged_reason
 
   test:
     suffix: uf16_q2q1_constant
