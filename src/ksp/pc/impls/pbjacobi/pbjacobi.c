@@ -5,6 +5,7 @@
 */
 
 #include <petsc/private/pcimpl.h>   /*I "petscpc.h" I*/
+#include <petscdm.h>
 
 /*
    Private context (data structure) for the PBJacobi preconditioner.
@@ -12,6 +13,9 @@
 typedef struct {
   const MatScalar *diag;
   PetscInt        bs,mbs;
+  PetscBool       variable;
+  PetscInt        numBlocks;
+  PetscInt       *blockSizes;
 } PC_PBJacobi;
 
 
@@ -247,7 +251,70 @@ static PetscErrorCode PCApply_PBJacobi_N(PC pc,Vec x,Vec y)
   ierr = PetscLogFlops(2*bs*bs-bs);CHKERRQ(ierr); /* 2*bs2 - bs */
   PetscFunctionReturn(0);
 }
+
+static PetscErrorCode PCApply_PBJacobi_Variable(PC pc, Vec x, Vec y)
+{
+  PC_PBJacobi       *jac  = (PC_PBJacobi *) pc->data;
+  const MatScalar   *diag = jac->diag;
+  const PetscScalar *xx;
+  PetscScalar       *yy;
+  PetscInt           b, row = 0, foff = 0, flops = 0;
+  PetscErrorCode     ierr;
+
+  PetscFunctionBegin;
+  ierr = VecGetArrayRead(x, &xx);CHKERRQ(ierr);
+  ierr = VecGetArray(y, &yy);CHKERRQ(ierr);
+  for (b = 0; b < jac->numBlocks; row += jac->blockSizes[b], foff += PetscSqr(jac->blockSizes[b]), ++b) {
+    const PetscInt bs = jac->blockSizes[b];
+
+    flops += 2*bs*bs - bs;
+    switch (jac->bs) {
+    case 1:
+      yy[row] = diag[foff]*xx[row];break;
+    case 2:
+      MatMult_2(&diag[foff], &xx[row], &yy[row]);break;
+    case 3:
+      MatMult_3(&diag[foff], &xx[row], &yy[row]);break;
+    case 4:
+      MatMult_4(&diag[foff], &xx[row], &yy[row]);break;
+    case 5:
+      MatMult_5(&diag[foff], &xx[row], &yy[row]);break;
+    case 6:
+      MatMult_6(&diag[foff], &xx[row], &yy[row]);break;
+    case 7:
+      MatMult_7(&diag[foff], &xx[row], &yy[row]);break;
+    default:
+      MatMult_N(bs, &diag[foff], &xx[row], &yy[row]);break;
+      break;
+    }
+  }
+  ierr = PetscLogFlops(flops);CHKERRQ(ierr);
+  ierr = VecRestoreArrayRead(x, &xx);CHKERRQ(ierr);
+  ierr = VecRestoreArray(y, &yy);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
 /* -------------------------------------------------------------------------- */
+static PetscErrorCode PCSetUp_PBJacobi_Variable(PC pc)
+{
+  PC_PBJacobi   *jac = (PC_PBJacobi *) pc->data;
+  Mat            A = pc->useAmat ? pc->mat : pc->pmat;
+  DM             dm;
+  PetscSection   s;
+  MatFactorError err;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = PCGetDM(pc, &dm);CHKERRQ(ierr);
+  if (!dm) SETERRQ(PetscObjectComm((PetscObject) pc), PETSC_ERR_ARG_WRONG, "PC must have a DM to use a variable block size");CHKERRQ(ierr);
+  ierr = DMGetDefaultGlobalSection(dm, &s);CHKERRQ(ierr);
+  ierr = PetscSectionGetBlockSequence(s, &jac->numBlocks, &jac->blockSizes);CHKERRQ(ierr);
+  ierr = MatInvertBlockDiagonalVariable(A, jac->numBlocks, jac->blockSizes, &jac->diag);CHKERRQ(ierr);
+  ierr = MatFactorGetError(A, &err);CHKERRQ(ierr);
+  if (err) pc->failedreason = (PCFailedReason) err;
+  pc->ops->apply = PCApply_PBJacobi_Variable;
+  PetscFunctionReturn(0);
+}
+
 static PetscErrorCode PCSetUp_PBJacobi(PC pc)
 {
   PC_PBJacobi    *jac = (PC_PBJacobi*)pc->data;
@@ -255,12 +322,16 @@ static PetscErrorCode PCSetUp_PBJacobi(PC pc)
   Mat            A = pc->pmat;
   MatFactorError err;
   PetscInt       nlocal;
-  
+
   PetscFunctionBegin;
+  if (jac->variable) {
+    ierr = PCSetUp_PBJacobi_Variable(pc);CHKERRQ(ierr);
+    PetscFunctionReturn(0);
+  }
   ierr = MatInvertBlockDiagonal(A,&jac->diag);CHKERRQ(ierr);
   ierr = MatFactorGetError(A,&err);CHKERRQ(ierr);
   if (err) pc->failedreason = (PCFailedReason)err;
- 
+
   ierr = MatGetBlockSize(A,&jac->bs);CHKERRQ(ierr);
   ierr = MatGetLocalSize(A,&nlocal,NULL);CHKERRQ(ierr);
   jac->mbs = nlocal/jac->bs;
@@ -292,15 +363,36 @@ static PetscErrorCode PCSetUp_PBJacobi(PC pc)
   }
   PetscFunctionReturn(0);
 }
+
+static PetscErrorCode PCPBJacobiSetVariable_PBJacobi(PC pc, PetscBool variable)
+{
+  PC_PBJacobi *jac = (PC_PBJacobi *) pc->data;
+
+  PetscFunctionBegin;
+  jac->variable = variable;
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode  PCPBJacobiGetVariable_PBJacobi(PC pc, PetscBool *variable)
+{
+  PC_PBJacobi *jac = (PC_PBJacobi *) pc->data;
+
+  PetscFunctionBegin;
+  *variable = jac->variable;
+  PetscFunctionReturn(0);
+}
 /* -------------------------------------------------------------------------- */
 static PetscErrorCode PCDestroy_PBJacobi(PC pc)
 {
+  PC_PBJacobi   *jac = (PC_PBJacobi *) pc->data;
   PetscErrorCode ierr;
 
   PetscFunctionBegin;
   /*
       Free the private data structure that was hanging off the PC
   */
+  if (jac->variable) {ierr = PetscFree(jac->diag);CHKERRQ(ierr);}
+  ierr = PetscFree(jac->blockSizes);CHKERRQ(ierr);
   ierr = PetscFree(pc->data);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -316,6 +408,18 @@ static PetscErrorCode PCView_PBJacobi(PC pc,PetscViewer viewer)
   if (iascii) {
     ierr = PetscViewerASCIIPrintf(viewer,"  point-block size %D\n",jac->bs);CHKERRQ(ierr);
   }
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode PCSetFromOptions_PBJacobi(PetscOptionItems *PetscOptionsObject, PC pc)
+{
+  PC_PBJacobi   *jac = (PC_PBJacobi *) pc->data;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = PetscOptionsHead(PetscOptionsObject, "PBJacobi options");CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-pc_pbjacobi_variable", "Allow variable block size", "PCPBJacobiSetVariable", jac->variable, &jac->variable, NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsTail();CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -366,6 +470,9 @@ PETSC_EXTERN PetscErrorCode PCCreate_PBJacobi(PC pc)
      diagonal entries of the matrix for fast preconditioner application.
   */
   jac->diag = 0;
+  jac->variable   = PETSC_FALSE;
+  jac->numBlocks  = 0;
+  jac->blockSizes = NULL;
 
   /*
       Set the pointers for the functions that are provided above.
@@ -378,12 +485,66 @@ PETSC_EXTERN PetscErrorCode PCCreate_PBJacobi(PC pc)
   pc->ops->applytranspose      = 0;
   pc->ops->setup               = PCSetUp_PBJacobi;
   pc->ops->destroy             = PCDestroy_PBJacobi;
-  pc->ops->setfromoptions      = 0;
+  pc->ops->setfromoptions      = PCSetFromOptions_PBJacobi;
   pc->ops->view                = PCView_PBJacobi;
   pc->ops->applyrichardson     = 0;
   pc->ops->applysymmetricleft  = 0;
   pc->ops->applysymmetricright = 0;
+  ierr = PetscObjectComposeFunction((PetscObject) pc, "PCPBJacobiSetVariable_C", PCPBJacobiSetVariable_PBJacobi);CHKERRQ(ierr);
+  ierr = PetscObjectComposeFunction((PetscObject) pc, "PCPBJacobiGetVariable_C", PCPBJacobiGetVariable_PBJacobi);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
+/*@
+  PCPBJacobiSetVariable - Set the flag to use a variable block size in the preconditioner
 
+  Logically Collective on PC
+
+  Input Parameters:
++ pc - the preconditioner context
+- variable - Flag to allow variable block size
+
+  Options Database Key:
+. -pc_pbjacobi_variable
+
+  Level: intermediate
+
+.seealso: PCPBJacobiaGetType(), PCPBJacobiSetVariable(), PCPBJacobiGetType()
+@*/
+PetscErrorCode PCPBJacobiSetVariable(PC pc, PetscBool variable)
+{
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  PetscValidHeaderSpecific(pc, PC_CLASSID, 1);
+  ierr = PetscTryMethod(pc, "PCPBJacobiSetVariable_C", (PC, PetscBool), (pc, variable));CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+/*@
+  PCPBJacobiGetVariable - Determines whether a variable block size is used in the preconditioner
+
+  Logically Collective on PC
+
+  Input Parameter:
+. pc - the preconditioner context
+
+  Output Parameter:
+. variable - Flag to allow variable block size
+
+  Options Database Key:
+. -pc_pbjacobi_variable
+
+  Level: intermediate
+
+.seealso: PCPBJacobiaSetType(), PCPBJacobiSetVariable(), PCPBJacobiGetType()
+@*/
+PetscErrorCode PCPBJacobiGetVariable(PC pc, PetscBool *variable)
+{
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  PetscValidHeaderSpecific(pc, PC_CLASSID, 1);
+  ierr = PetscUseMethod(pc, "PCPBJacobiGetVariable_C", (PC, PetscBool *), (pc, variable));CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
