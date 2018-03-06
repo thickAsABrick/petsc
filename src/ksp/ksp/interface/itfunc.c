@@ -5,6 +5,7 @@
 
 #include <petsc/private/kspimpl.h>   /*I "petscksp.h" I*/
 #include <petscdm.h>
+#include <petscds.h> /* For automatic construction of matrix */
 
 /*@
    KSPComputeExtremeSingularValues - Computes the extreme singular values
@@ -328,6 +329,19 @@ PetscErrorCode KSPSetUp(KSP ksp)
       if (kdm->ops->computeoperators) {
         ierr = KSPGetOperators(ksp,&A,&B);CHKERRQ(ierr);
         ierr = (*kdm->ops->computeoperators)(ksp,A,B,kdm->operatorsctx);CHKERRQ(ierr);
+      } else if (ksp->dm) {
+        /* TODO: This only works for a linear problem. Should pass down X from toplevel using Coarsen hooks. At toplevel, you get it from the SNES, but how? */
+        PetscDS  prob;
+        Vec      X;
+        PetscInt Nf;
+
+        ierr = DMGetDS(ksp->dm, &prob);CHKERRQ(ierr);
+        ierr = PetscDSGetNumFields(prob, &Nf);CHKERRQ(ierr);
+        if (!Nf) SETERRQ(PetscObjectComm((PetscObject)ksp),PETSC_ERR_ARG_WRONGSTATE,"You called KSPSetDM() but did not use DMKSPSetComputeOperators() or KSPSetDMActive(ksp,PETSC_FALSE);");
+        ierr = DMGetGlobalVector(ksp->dm, &X);CHKERRQ(ierr);
+        ierr = KSPGetOperators(ksp,&A,&B);CHKERRQ(ierr);
+        ierr = DMPlexSNESComputeJacobianFEM(ksp->dm, X, A, B, kdm->operatorsctx);CHKERRQ(ierr);
+        ierr = DMRestoreGlobalVector(ksp->dm, &X);CHKERRQ(ierr);
       } else SETERRQ(PetscObjectComm((PetscObject)ksp),PETSC_ERR_ARG_WRONGSTATE,"You called KSPSetDM() but did not use DMKSPSetComputeOperators() or KSPSetDMActive(ksp,PETSC_FALSE);");
     }
   }
@@ -615,6 +629,8 @@ PetscErrorCode KSPSolve(KSP ksp,Vec b,Vec x)
   VecLocked(ksp->vec_sol,3);
 
   ierr = PCGetOperators(ksp->pc,&mat,&pmat);CHKERRQ(ierr);
+  ierr = MatViewFromOptions(mat,(PetscObject)ksp,"-ksp_view_mat_pre");CHKERRQ(ierr);
+  ierr = MatViewFromOptions(pmat,(PetscObject)ksp,"-ksp_view_pmat_pre");CHKERRQ(ierr);
   /* diagonal scale RHS if called for */
   if (ksp->dscale) {
     ierr = VecPointwiseMult(ksp->vec_rhs,ksp->vec_rhs,ksp->diagonal);CHKERRQ(ierr);
