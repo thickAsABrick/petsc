@@ -6,6 +6,8 @@
 #include <petsc/private/matimpl.h>        /*I "petscmat.h" I*/
 #include <petsc/private/isimpl.h>
 #include <petsc/private/vecimpl.h>
+#include <petsc/private/kernels/blocktranspose.h> /* For MatInvertBlockDiagonalVariable() */
+#include <petsc/private/kernels/blockinvert.h>    /* For MatInvertBlockDiagonalVariable() */
 
 /* Logging support */
 PetscClassId MAT_CLASSID;
@@ -10397,6 +10399,99 @@ PetscErrorCode MatInvertBlockDiagonalMat(Mat A,Mat C)
   ierr = MatAssemblyBegin(C,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(C,MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatSetOption(C,MAT_ROW_ORIENTED,PETSC_TRUE);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+/*@C
+  MatInvertBlockDiagonalVariable - Inverts the block diagonal entries, with variable block size.
+
+  Collective on Mat
+
+  Input Parameters:
++ A          - the matrix
+. numBlocks  - the number of blocks
+- blockSizes - an array of the size of each block
+
+  Output Parameter:
+. values - the block inverses in column major order (FORTRAN-like)
+
+   Note:
+   This routine is not available from Fortran.
+
+  Level: advanced
+
+.seealso: MatInvertBockDiagonal(), MatInvertBockDiagonalMat()
+@*/
+PetscErrorCode MatInvertBlockDiagonalVariable(Mat A, PetscInt numBlocks, const PetscInt blockSizes[], const PetscScalar **values)
+{
+  PetscScalar   *fact;
+  PetscReal      shift = 0.0;
+  PetscBool      allowzeropivot = PetscNot(A->erroriffailure), zeropivotdetected = PETSC_FALSE;
+  MatScalar     *v_work;
+  PetscInt      *v_pivots, *ij,  m, mb = 0, maxb = 0, fsize = 0, foff = 0, row, b, k;
+  MPI_Comm       comm;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  PetscValidHeaderSpecific(A, MAT_CLASSID, 1);
+  if (!A->assembled) SETERRQ(PETSC_COMM_SELF,PETSC_ERR_ARG_WRONGSTATE,"Not for unassembled matrix");
+  if (A->factortype) SETERRQ(PETSC_COMM_SELF,PETSC_ERR_ARG_WRONGSTATE,"Not for factored matrix");
+  ierr = PetscObjectGetComm((PetscObject) A, &comm);CHKERRQ(ierr);
+  ierr = MatGetLocalSize(A, &m, NULL);CHKERRQ(ierr);
+  for (b = 0; b < numBlocks; ++b) {mb += blockSizes[b]; fsize += PetscSqr(blockSizes[b]); maxb = PetscMax(maxb, blockSizes[b]);}
+  ierr = PetscMalloc1(fsize, &fact);CHKERRQ(ierr);
+  ierr = PetscMalloc3(maxb, &v_work, maxb, &v_pivots, maxb, &ij);CHKERRQ(ierr);
+  if (mb != m) SETERRQ2(comm, PETSC_ERR_ARG_SIZ, "Sum of block sizes %D does not match the local matrix size %D", mb, m);
+  /* factor and invert each block */
+  ierr = MatGetOwnershipRange(A, &row, NULL);CHKERRQ(ierr);
+  for (b = 0; b < numBlocks; row += blockSizes[b], foff += PetscSqr(blockSizes[b]), ++b) {
+    const PetscInt bs = blockSizes[b];
+
+    for (k = 0; k < bs; ++k) {ij[k] = row + k;}
+    ierr = MatGetValues(A, bs, ij, bs, ij, &fact[foff]);CHKERRQ(ierr);
+    switch (bs) {
+    case 1:
+      if (PetscAbsScalar(fact[foff] + shift) < PETSC_MACHINE_EPSILON) {
+        if (allowzeropivot) {
+          A->factorerrortype             = MAT_FACTOR_NUMERIC_ZEROPIVOT;
+          A->factorerror_zeropivot_value = PetscAbsScalar(fact[foff]);
+          A->factorerror_zeropivot_row   = row;
+          ierr = PetscInfo3(A,"Zero pivot, row %D pivot %g tolerance %g\n", row, (double) PetscAbsScalar(fact[foff]), (double) PETSC_MACHINE_EPSILON);CHKERRQ(ierr);
+        } else SETERRQ3(comm, PETSC_ERR_MAT_LU_ZRPVT, "Zero pivot, row %D pivot %g tolerance %g", row, (double) PetscAbsScalar(fact[foff]), (double) PETSC_MACHINE_EPSILON);
+      }
+      fact[foff] = (PetscScalar) 1.0 / (fact[foff] + shift);
+      break;
+    case 2:
+      ierr  = PetscKernel_A_gets_inverse_A_2(&fact[foff], shift, allowzeropivot, &zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_2(&fact[foff]);CHKERRQ(ierr);
+      break;
+    case 3:
+      ierr  = PetscKernel_A_gets_inverse_A_3(&fact[foff],shift,allowzeropivot,&zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_3(&fact[foff]);CHKERRQ(ierr);
+      break;
+    case 4:
+      ierr  = PetscKernel_A_gets_inverse_A_4(&fact[foff],shift,allowzeropivot,&zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_4(&fact[foff]);CHKERRQ(ierr);
+      break;
+    case 5:
+      ierr  = PetscKernel_A_gets_inverse_A_5(&fact[foff],v_pivots,v_work,shift,allowzeropivot,&zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_5(&fact[foff]);CHKERRQ(ierr);
+      break;
+    case 6:
+      ierr  = PetscKernel_A_gets_inverse_A_6(&fact[foff],shift,allowzeropivot,&zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_6(&fact[foff]);CHKERRQ(ierr);
+      break;
+    case 7:
+      ierr  = PetscKernel_A_gets_inverse_A_7(&fact[foff],shift,allowzeropivot,&zeropivotdetected);CHKERRQ(ierr);
+      ierr  = PetscKernel_A_gets_transpose_A_7(&fact[foff]);CHKERRQ(ierr);
+      break;
+    default:
+      ierr = PetscKernel_A_gets_inverse_A(bs, &fact[foff], v_pivots, v_work, allowzeropivot, &zeropivotdetected);CHKERRQ(ierr);
+      ierr = PetscKernel_A_gets_transpose_A_N(&fact[foff], bs);CHKERRQ(ierr);
+    }
+  }
+  ierr = PetscFree3(v_work, v_pivots, ij);CHKERRQ(ierr);
+  *values = fact;
   PetscFunctionReturn(0);
 }
 
