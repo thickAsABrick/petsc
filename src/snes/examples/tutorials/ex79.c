@@ -13,7 +13,7 @@ constrained to have zero integral over the domain.
 
 To produce nice output, use
 
-  -dm_view hdf5:mantle.h5 -solution_view hdf5:mantle.h5::append -initial_view hdf5:mantle.h5::append -temp_fine_view hdf5:mantle.h5::append -viscosity_view hdf5:mantle.h5::append
+  -dm_view hdf5:mantle.h5 -solution_view hdf5:mantle.h5::append -initial_view hdf5:mantle.h5::append -temp_view hdf5:mantle.h5::append -viscosity_view hdf5:mantle.h5::append
 
 and to get fields at each solver iterate
 
@@ -23,13 +23,18 @@ and to get temperature on different levels (averaged temp on level 0 and injecte
 
   -dm_s_l0_view hdf5:mantle0.h5 -temp_s_l0_view hdf5:mantle0.h5::append -dm_r_l1_view hdf5:mantle1.h5 -temp_r_l1_view hdf5:mantle1.h5::append
 
-Testing Solver:
+THE PROBLEM:
+  When I make an MG instance underneath PCFIELDSPLIT, the KSP is not hooked up to a SNES which will compute the operators for it (snes.c:654)
 
-./ex69  -sol_type diffusion -simplex 0 -mantle_basename /PETSc3/geophysics/MM/input_data/TwoDimSlab45cg1deguf4 -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor_true_residual -ksp_converged_reason -fieldsplit_velocity_ksp_monitor_no -fieldsplit_velocity_ksp_converged_reason_no -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -ksp_rtol 1e-8 -fieldsplit_pressure_ksp_rtol 1e-3 -fieldsplit_pressure_pc_type lu -snes_max_it 1 -snes_error_if_not_converged 0 -snes_view -petscds_jac_pre 1
+  The pmat is wrong in fas_levels_1_mg_levels_1_ KSP. Should track this down. This is down also wrong in fas_coarse. It seems that PCFIELDSPLIT screws up the pmat for some reason.
 
-Testing Jacobian:
+  The Jacobian for dislocation/composite still looks wrong. Can get right one with -snes_mf_operator -snes_max_funcs 1000000
 
-./ex69  -sol_type test3 -simplex 0 -mantle_basename $PETSC_DIR/share/petsc/datafiles/mantle/small -dm_plex_separate_marker -vel_petscspace_order 1 -pres_petscspace_order 0 -aux_0_petscspace_order 1 -pc_fieldsplit_diag_use_amat -pc_type fieldsplit -pc_fieldsplit_type schur -pc_fieldsplit_schur_factorization_type full -pc_fieldsplit_schur_precondition a11 -fieldsplit_velocity_pc_type lu -fieldsplit_pressure_pc_type lu -snes_error_if_not_converged -snes_view -ksp_error_if_not_converged -dm_view -snes_monitor -snes_converged_reason -ksp_monitor -ksp_converged_reason -fieldsplit_velocity_ksp_monitor -fieldsplit_velocity_ksp_converged_reason -fieldsplit_velocity_ksp_view_pmat -fieldsplit_pressure_ksp_monitor -fieldsplit_pressure_ksp_converged_reason -fieldsplit_pressure_ksp_view_pmat -snes_type test -petscds_jac_pre 0 -snes_test_display 1
+PBJacobi for variable block size
+  Create the block sequence from PetscSection from DM
+  Write a MatInvertVariableBlockDiagonal() using MatInvertBlockDiagonal_SeqAIJ(), which takes the block sequence
+  Write a variable section of PBJacobi that takes the block sequence, and does the inversion
+    Ask DM for block sequence
 
 Citcom performance:
  1250 x 850 on 900 steps (3.5h per 100 timeteps)
