@@ -2893,3 +2893,44 @@ PetscErrorCode PetscSectionRestoreFieldPointSyms(PetscSection section, PetscInt 
   ierr = PetscSectionRestorePointSyms(section->field[field],numPoints,points,perms,rots);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
+
+/*@C
+  PetscSectionGetBlockSequence - Get the sequence of block sizes for a matrix defined by a global section
+
+  Not collective
+
+  Input Parameter:
+. section - the global section
+
+  Output Parameters:
++ numBlocks - The number of matrix blocks
+- blocks - An array of the block size for each block
+
+  Level: developer
+
+.seealso: PetscSectionCreate()
+@*/
+PetscErrorCode PetscSectionGetBlockSequence(PetscSection s, PetscInt *numBlocks, PetscInt *blockSizes[])
+{
+  PetscInt       Nb = 0, *blocks;
+  PetscInt       dof, cdof;
+  PetscInt       pStart, pEnd, p, b;
+  PetscErrorCode ierr;
+
+  PetscFunctionBegin;
+  ierr = PetscSectionGetChart(s, &pStart, &pEnd);CHKERRQ(ierr);
+  for (p = pStart; p < pEnd; ++p) {
+    ierr = PetscSectionGetDof(s, p, &dof);CHKERRQ(ierr);
+    if (dof > 0) ++Nb;
+  }
+  ierr = PetscMalloc1(Nb, &blocks);CHKERRQ(ierr);
+  for (p = pStart, b = 0; p < pEnd; ++p) {
+    ierr = PetscSectionGetDof(s, p, &dof);CHKERRQ(ierr);
+    if (dof <= 0) continue;
+    ierr = PetscSectionGetConstraintDof(s, p, &cdof);CHKERRQ(ierr);
+    blocks[b++] = dof-cdof;
+  }
+  *numBlocks  = Nb;
+  *blockSizes = blocks;
+  PetscFunctionReturn(0);
+}
