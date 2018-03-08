@@ -64,6 +64,8 @@ extern PetscErrorCode MatCreateLMVM(MPI_Comm comm, PetscInt n, PetscInt N, Mat *
 
   ctx->delta_min = 1e-7;
   ctx->delta_max = 100.0;
+  
+  ctx->recycle = PETSC_FALSE;
 
   /*  Begin configuration */
   ierr = PetscOptionsBegin(comm,NULL,NULL,NULL);CHKERRQ(ierr);
@@ -82,6 +84,7 @@ extern PetscErrorCode MatCreateLMVM(MPI_Comm comm, PetscInt n, PetscInt N, Mat *
   ierr = PetscOptionsEList("-tao_lmm_limit_type", "limit type", "", Limit_Table, MatLMVM_Limit_Types, Limit_Table[ctx->limitType], &ctx->limitType,NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-tao_lmm_delta_min", "minimum delta value", "", ctx->delta_min, &ctx->delta_min,NULL);CHKERRQ(ierr);
   ierr = PetscOptionsReal("-tao_lmm_delta_max", "maximum delta value", "", ctx->delta_max, &ctx->delta_max,NULL);CHKERRQ(ierr);
+  ierr = PetscOptionsBool("-tao_lmm_recycle", "enable recycling of accumulated corrections between subsequent TaoSolve() calls", "", ctx->recycle, &ctx->recycle, NULL);CHKERRQ(ierr);
   ierr = PetscOptionsEnd();CHKERRQ(ierr);
 
   /*  Complete configuration */
@@ -256,6 +259,39 @@ extern PetscErrorCode MatDestroy_LMVM(Mat M)
   PetscFunctionReturn(0);
 }
 
+PETSC_EXTERN PetscErrorCode MatLMVMGetUpdates(Mat M, PetscInt *nupdates)
+{
+  PetscErrorCode ierr;
+  MatLMVMCtx     *ctx;
+  
+  PetscFunctionBegin;
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+  *nupdates = ctx->nupdates;
+  PetscFunctionReturn(0);
+}
+
+PETSC_EXTERN PetscErrorCode MatLMVMSetRecycleFlag(Mat M, PetscBool flg)
+{
+  PetscErrorCode ierr;
+  MatLMVMCtx     *ctx;
+  
+  PetscFunctionBegin;
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+  ctx->recycle = flg;
+  PetscFunctionReturn(0);
+}
+
+PETSC_EXTERN PetscErrorCode MatLMVMGetRecycleFlag(Mat M, PetscBool *flg)
+{
+  PetscErrorCode ierr;
+  MatLMVMCtx     *ctx;
+  
+  PetscFunctionBegin;
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+  *flg = ctx->recycle;
+  PetscFunctionReturn(0);
+}
+
 extern PetscErrorCode MatLMVMReset(Mat M)
 {
   PetscErrorCode ierr;
@@ -264,6 +300,9 @@ extern PetscErrorCode MatLMVMReset(Mat M)
 
   PetscFunctionBegin;
   ierr = MatShellGetContext(M,(void**)&ctx);CHKERRQ(ierr);
+  if (ctx->recycle) {
+    ierr = PetscInfo(M, "WARNING: Correction vectors are being reset while recycling is enabled!\n");CHKERRQ(ierr);
+  }
   if (ctx->Gprev) {
     ierr = PetscObjectDereference((PetscObject)ctx->Gprev);CHKERRQ(ierr);
   }
