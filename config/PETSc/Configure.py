@@ -480,8 +480,13 @@ prepend-path PATH "%s"
     fd.write('\"-----------------------------------------\\n\"\n')
     fd.write('\"Libraries compiled on %s on %s \\n\"\n' % (time.ctime(time.time()), platform.node()))
     fd.write('\"Machine characteristics: %s\\n\"\n' % (platform.platform()))
-    fd.write('\"Using PETSc directory: %s\\n\"\n' % (escape(self.petscdir.dir)))
-    fd.write('\"Using PETSc arch: %s\\n\"\n' % (escape(self.arch.arch)))
+    fd.write('\"Using PETSc directory: %s\\n\"\n' % (escape(self.installdir.dir)))
+    if self.framework.argDB['prefix']:
+      fd.write('\"Using prefix install - so no PETSc arch\\n\"\n')
+      petscinstallarch=''
+    else:
+      fd.write('\"Using PETSc arch: %s\\n\"\n' % (escape(self.arch.arch)))
+      petscinstallarch=self.arch.arch
     fd.write('\"-----------------------------------------\\n\";\n')
     fd.write('static const char *petsccompilerinfo = \"\\n\"\n')
     self.setCompilers.pushLanguage(self.languages.clanguage)
@@ -493,7 +498,7 @@ prepend-path PATH "%s"
       self.setCompilers.popLanguage()
     fd.write('\"-----------------------------------------\\n\";\n')
     fd.write('static const char *petsccompilerflagsinfo = \"\\n\"\n')
-    fd.write('\"Using include paths: %s %s %s\\n\"\n' % ('-I'+escape(os.path.join(self.petscdir.dir, self.arch.arch, 'include')), '-I'+escape(os.path.join(self.petscdir.dir, 'include')), escape(self.PETSC_CC_INCLUDES)))
+    fd.write('\"Using include paths: %s %s %s\\n\"\n' % ('-I'+escape(os.path.join(self.installdir.dir, petscinstallarch, 'include')), '-I'+escape(os.path.join(self.installdir.dir, 'include')), escape(self.PETSC_CC_INCLUDES).replace(self.petscdir.dir,self.installdir.dir).replace(self.arch.arch,'')))
     fd.write('\"-----------------------------------------\\n\";\n')
     fd.write('static const char *petsclinkerinfo = \"\\n\"\n')
     self.setCompilers.pushLanguage(self.languages.clanguage)
@@ -503,7 +508,7 @@ prepend-path PATH "%s"
       self.setCompilers.pushLanguage('FC')
       fd.write('\"Using Fortran linker: %s\\n\"\n' % (escape(self.setCompilers.getLinker())))
       self.setCompilers.popLanguage()
-    fd.write('\"Using libraries: %s%s -L%s %s %s\\n\"\n' % (escape(self.setCompilers.CSharedLinkerFlag), escape(os.path.join(self.petscdir.dir, self.arch.arch, 'lib')), escape(os.path.join(self.petscdir.dir, self.arch.arch, 'lib')), escape(self.petsclib), escape(self.PETSC_EXTERNAL_LIB_BASIC)))
+    fd.write('\"Using libraries: %s%s -L%s %s %s\\n\"\n' % (escape(self.setCompilers.CSharedLinkerFlag), escape(os.path.join(self.installdir.dir, petscinstallarch, 'lib')), escape(os.path.join(self.installdir.dir, petscinstallarch, 'lib')), escape(self.petsclib), escape(self.PETSC_EXTERNAL_LIB_BASIC)))
     fd.write('\"-----------------------------------------\\n\";\n')
     fd.close()
     return
@@ -941,16 +946,16 @@ fprintf(f, "%lu\\n", (unsigned long)sizeof(struct mystruct));
       self.addDefine('DIR_SEPARATOR','\'\\\\\'')
       self.addDefine('REPLACE_DIR_SEPARATOR','\'/\'')
       self.addDefine('CANNOT_START_DEBUGGER',1)
-      (petscdir,error,status) = self.executeShellCommand('cygpath -w '+self.petscdir.dir, log = self.log)
+      (petscdir,error,status) = self.executeShellCommand('cygpath -w '+self.installdir.dir, log = self.log)
       self.addDefine('DIR','"'+petscdir.replace('\\','\\\\')+'"')
-      (petscdir,error,status) = self.executeShellCommand('cygpath -m '+self.petscdir.dir, log = self.log)
+      (petscdir,error,status) = self.executeShellCommand('cygpath -m '+self.installdir.dir, log = self.log)
       self.addMakeMacro('wPETSC_DIR',petscdir)
     else:
       self.addDefine('PATH_SEPARATOR','\':\'')
       self.addDefine('REPLACE_DIR_SEPARATOR','\'\\\\\'')
       self.addDefine('DIR_SEPARATOR','\'/\'')
-      self.addDefine('DIR', '"'+self.petscdir.dir+'"')
-      self.addMakeMacro('wPETSC_DIR',self.petscdir.dir)
+      self.addDefine('DIR', '"'+self.installdir.dir+'"')
+      self.addMakeMacro('wPETSC_DIR',self.installdir.dir)
     return
 
 #-----------------------------------------------------------------------------------------------------
