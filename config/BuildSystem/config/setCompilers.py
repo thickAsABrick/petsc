@@ -674,7 +674,7 @@ class Configure(config.base.Configure):
       yield self.argDB['CUDAPP']
     else:
       if hasattr(self, 'CUDAC'):
-        yield self.CUDAC+' -arch=sm_30 -E'
+        yield self.CUDAC+' -Wno-deprecated-gpu-targets -E'
     return
 
   def checkCUDAPreprocessor(self):
