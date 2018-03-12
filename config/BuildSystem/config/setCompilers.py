@@ -615,27 +615,26 @@ class Configure(config.base.Configure):
     import os
     '''Determine the CUDA compiler using CUDAC, then --with-cudac, then vendors
        - Any given category can be excluded'''
-    extraFlags=' -Wno-deprecated-gpu-targets'
     if hasattr(self, 'CUDAC'):
-      yield self.CUDAC+extraFlags
+      yield self.CUDAC
     elif self.argDB.has_key('with-cudac'):
-      yield self.argDB['with-cudac']+extraFlags
+      yield self.argDB['with-cudac']
       raise RuntimeError('CUDA compiler you provided with -with-cudac='+self.argDB['with-cudac']+' does not work.'+'\n'+self.mesg)
     elif self.argDB.has_key('CUDAC'):
-      yield self.argDB['CUDAC']+extraFlags
+      yield self.argDB['CUDAC']
       raise RuntimeError('CUDA compiler you provided with -CUDAC='+self.argDB['CUDAC']+' does not work.'+'\n'+self.mesg)
     elif self.argDB.has_key('with-cuda-dir'):
       import os
       nvccPath = os.path.join(self.argDB['with-cuda-dir'], 'bin','nvcc')
-      yield nvccPath+extraFlags
+      yield nvccPath
     else:
       vendor = self.vendor
       if not self.vendor is None:
         if vendor == 'nvidia' or not vendor:
           yield 'nvcc'
-      yield 'nvcc'+extraFlags
-      yield os.path.join('/Developer','NVIDIA','CUDA-6.5','bin','nvcc')+extraFlags
-      yield os.path.join('/usr','local','cuda','bin','nvcc')+extraFlags
+      yield 'nvcc'
+      yield os.path.join('/Developer','NVIDIA','CUDA-6.5','bin','nvcc')
+      yield os.path.join('/usr','local','cuda','bin','nvcc')
     return
 
   def checkCUDACompiler(self):
@@ -675,7 +674,7 @@ class Configure(config.base.Configure):
       yield self.argDB['CUDAPP']
     else:
       if hasattr(self, 'CUDAC'):
-        yield self.CUDAC+' -E'
+        yield self.CUDAC+' -arch=sm_30 -E'
     return
 
   def checkCUDAPreprocessor(self):
