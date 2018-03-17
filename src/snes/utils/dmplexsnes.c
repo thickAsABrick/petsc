@@ -1350,7 +1350,7 @@ static PetscErrorCode ISIntersect_Caching(IS is1, IS is2, IS *isect)
 static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t, DMLabel label, PetscInt numValues, const PetscInt values[], PetscInt field, Vec locX, Vec locX_t, Vec locF, DMField coordField, IS facetIS)
 {
   DM_Plex         *mesh = (DM_Plex *) dm->data;
-  DM               plex = NULL;
+  DM               plex = NULL, plexA = NULL;
   PetscDS          prob, probAux = NULL;
   PetscSection     section, sectionAux = NULL;
   Vec              locA = NULL;
@@ -1361,6 +1361,7 @@ static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t
   PetscErrorCode   ierr;
 
   PetscFunctionBegin;
+  ierr = DMConvert(dm, DMPLEX, &plex);CHKERRQ(ierr);
   ierr = DMGetDefaultSection(dm, &section);CHKERRQ(ierr);
   ierr = DMGetDS(dm, &prob);CHKERRQ(ierr);
   ierr = PetscDSGetTotalDimension(prob, &totDim);CHKERRQ(ierr);
@@ -1369,10 +1370,10 @@ static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t
     DM dmAux;
 
     ierr = VecGetDM(locA, &dmAux);CHKERRQ(ierr);
-    ierr = DMGetDS(dmAux, &probAux);CHKERRQ(ierr);
+    ierr = DMConvert(dmAux, DMPLEX, &plexA);CHKERRQ(ierr);
+    ierr = DMGetDS(plexA, &probAux);CHKERRQ(ierr);
     ierr = PetscDSGetTotalDimension(probAux, &totDimAux);CHKERRQ(ierr);
-    ierr = DMConvert(dmAux, DMPLEX, &plex);CHKERRQ(ierr);
-    ierr = DMGetDefaultSection(plex, &sectionAux);CHKERRQ(ierr);
+    ierr = DMGetDefaultSection(plexA, &sectionAux);CHKERRQ(ierr);
   }
   for (v = 0; v < numValues; ++v) {
     PetscBool        isAffine;
@@ -1412,24 +1413,27 @@ static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t
       PetscScalar   *x     = NULL;
       PetscInt       i, coneSize, faceLoc;
 
-      ierr = DMPlexGetSupport(dm, point, &support);CHKERRQ(ierr);
-      ierr = DMPlexGetConeSize(dm, support[0], &coneSize);CHKERRQ(ierr);
-      ierr = DMPlexGetCone(dm, support[0], &cone);CHKERRQ(ierr);
+      ierr = DMPlexGetSupport(plex, point, &support);CHKERRQ(ierr);
+      ierr = DMPlexGetConeSize(plex, support[0], &coneSize);CHKERRQ(ierr);
+      ierr = DMPlexGetCone(plex, support[0], &cone);CHKERRQ(ierr);
       for (faceLoc = 0; faceLoc < coneSize; ++faceLoc) if (cone[faceLoc] == point) break;
       if (faceLoc == coneSize) SETERRQ2(PETSC_COMM_SELF, PETSC_ERR_PLIB, "Could not find face %D in cone of support[0] %D", point, support[0]);
       fgeom->face[face][0] = faceLoc;
-      ierr = DMPlexVecGetClosure(dm, section, locX, support[0], NULL, &x);CHKERRQ(ierr);
+      ierr = DMPlexVecGetClosure(plex, section, locX, support[0], NULL, &x);CHKERRQ(ierr);
       for (i = 0; i < totDim; ++i) u[face*totDim+i] = x[i];
-      ierr = DMPlexVecRestoreClosure(dm, section, locX, support[0], NULL, &x);CHKERRQ(ierr);
+      ierr = DMPlexVecRestoreClosure(plex, section, locX, support[0], NULL, &x);CHKERRQ(ierr);
       if (locX_t) {
-        ierr = DMPlexVecGetClosure(dm, section, locX_t, support[0], NULL, &x);CHKERRQ(ierr);
+        ierr = DMPlexVecGetClosure(plex, section, locX_t, support[0], NULL, &x);CHKERRQ(ierr);
         for (i = 0; i < totDim; ++i) u_t[face*totDim+i] = x[i];
-        ierr = DMPlexVecRestoreClosure(dm, section, locX_t, support[0], NULL, &x);CHKERRQ(ierr);
+        ierr = DMPlexVecRestoreClosure(plex, section, locX_t, support[0], NULL, &x);CHKERRQ(ierr);
       }
       if (locA) {
-        ierr = DMPlexVecGetClosure(plex, sectionAux, locA, support[0], NULL, &x);CHKERRQ(ierr);
+        PetscInt subp;
+        ierr = DMPlexGetSubpoint(plexA, support[0], &subp);CHKERRQ(ierr);
+        ierr = DMPlexVecGetClosure(plexA, sectionAux, locA, subp, NULL, &x);CHKERRQ(ierr);
         for (i = 0; i < totDimAux; ++i) a[face*totDimAux+i] = x[i];
-        ierr = DMPlexVecRestoreClosure(plex, sectionAux, locA, support[0], NULL, &x);CHKERRQ(ierr);
+        ierr = DMPlexVecRestoreClosure(plexA, sectionAux, locA, subp, NULL, &x);CHKERRQ(ierr);
+        CHKMEMQ;
       }
     }
     ierr = PetscMemzero(elemVec, numFaces*totDim * sizeof(PetscScalar));CHKERRQ(ierr);
@@ -1463,8 +1467,8 @@ static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t
       const PetscInt point = points[face], *support;
 
       if (mesh->printFEM > 1) {ierr = DMPrintCellVector(point, "BdResidual", totDim, &elemVec[face*totDim]);CHKERRQ(ierr);}
-      ierr = DMPlexGetSupport(dm, point, &support);CHKERRQ(ierr);
-      ierr = DMPlexVecSetClosure(dm, NULL, locF, support[0], &elemVec[face*totDim], ADD_ALL_VALUES);CHKERRQ(ierr);
+      ierr = DMPlexGetSupport(plex, point, &support);CHKERRQ(ierr);
+      ierr = DMPlexVecSetClosure(plex, NULL, locF, support[0], &elemVec[face*totDim], ADD_ALL_VALUES);CHKERRQ(ierr);
     }
     ierr = DMSNESRestoreFEGeom(coordField,pointIS,qGeom,PETSC_TRUE,&fgeom);CHKERRQ(ierr);
     ierr = PetscQuadratureDestroy(&qGeom);CHKERRQ(ierr);
@@ -1472,7 +1476,8 @@ static PetscErrorCode DMPlexComputeBdResidual_Single_Internal(DM dm, PetscReal t
     ierr = ISDestroy(&pointIS);CHKERRQ(ierr);
     ierr = PetscFree4(u, u_t, elemVec, a);CHKERRQ(ierr);
   }
-  if (plex) {ierr = DMDestroy(&plex);CHKERRQ(ierr);}
+  if (plex)  {ierr = DMDestroy(&plex);CHKERRQ(ierr);}
+  if (plexA) {ierr = DMDestroy(&plexA);CHKERRQ(ierr);}
   PetscFunctionReturn(0);
 }
 
