@@ -295,6 +295,10 @@ PetscErrorCode PetscSFSetRankOrder(PetscSF sf,PetscBool flg)
 
    Notes: In Fortran you must use PETSC_COPY_VALUES for localmode and remotemode
 
+   Developers Note: Local indices which are the identity permutation in the range [0,nleaves) are discarded as they
+   encode contiguous storage. In such case, if localmode is PETSC_OWN_POINTER, the memory is deallocated as it is not
+   needed
+
 .seealso: PetscSFCreate(), PetscSFView(), PetscSFGetGraph()
 @*/
 PetscErrorCode PetscSFSetGraph(PetscSF sf,PetscInt nroots,PetscInt nleaves,const PetscInt *ilocal,PetscCopyMode localmode,const PetscSFNode *iremote,PetscCopyMode remotemode)
@@ -318,12 +322,20 @@ PetscErrorCode PetscSFSetGraph(PetscSF sf,PetscInt nroots,PetscInt nleaves,const
     PetscInt i;
     PetscInt minleaf = PETSC_MAX_INT;
     PetscInt maxleaf = PETSC_MIN_INT;
+    int      contiguous = 1;
     for (i=0; i<nleaves; i++) {
       minleaf = PetscMin(minleaf,ilocal[i]);
       maxleaf = PetscMax(maxleaf,ilocal[i]);
+      contiguous &= (ilocal[i] == i);
     }
     sf->minleaf = minleaf;
     sf->maxleaf = maxleaf;
+    if (contiguous) {
+      if (localmode == PETSC_OWN_POINTER) {
+        ierr = PetscFree(ilocal);CHKERRQ(ierr);
+      }
+      ilocal = NULL;
+    }
   } else {
     sf->minleaf = 0;
     sf->maxleaf = nleaves - 1;
@@ -494,6 +506,9 @@ PetscErrorCode PetscSFDuplicate(PetscSF sf,PetscSFDuplicateOption opt,PetscSF *n
 .  ilocal - locations of leaves in leafdata buffers
 -  iremote - remote locations of root vertices for each leaf on the current process
 
+   Notes:
+   We are not currently requiring that the graph is set, thus returning nroots=-1 if it has not been set yet
+
    Level: intermediate
 
 .seealso: PetscSFCreate(), PetscSFView(), PetscSFSetGraph()
@@ -503,8 +518,6 @@ PetscErrorCode PetscSFGetGraph(PetscSF sf,PetscInt *nroots,PetscInt *nleaves,con
 
   PetscFunctionBegin;
   PetscValidHeaderSpecific(sf,PETSCSF_CLASSID,1);
-  /* We are not currently requiring that the graph is set, thus returning nroots=-1 if it has not been set */
-  /* PetscSFCheckGraphSet(sf,1); */
   if (nroots) *nroots = sf->nroots;
   if (nleaves) *nleaves = sf->nleaves;
   if (ilocal) *ilocal = sf->mine;
