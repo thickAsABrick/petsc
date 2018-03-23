@@ -23,8 +23,8 @@ libpetsc_abi_version := $(PETSC_VERSION_MAJOR).$(if $(filter $(PETSC_VERSION_REL
 libpetsc_lib_version := $(libpetsc_abi_version).$(PETSC_VERSION_SUBMINOR)
 soname_function = $(call SONAME_FUNCTION,$(1),$(libpetsc_abi_version))
 libname_function = $(call SONAME_FUNCTION,$(1),$(libpetsc_lib_version))
-basename_all = $(basename $(basename $(basename $(basename $(1)))))
-sl_linker_args = $(call SL_LINKER_FUNCTION,$(call basename_all,$@),$(libpetsc_abi_version),$(libpetsc_lib_version))
+absbasename_all = $(basename $(basename $(basename $(basename $(abspath $(1))))))# arch/lib/libpetsc.so.3.8.0 -> /path/to/arch/lib/libpetsc
+sl_linker_args = $(call SL_LINKER_FUNCTION,$(call absbasename_all,$@),$(libpetsc_abi_version),$(libpetsc_lib_version))
 
 libpetsc_shared  := $(LIBDIR)/libpetsc.$(SL_LINKER_SUFFIX)
 libpetsc_soname  := $(call soname_function,$(LIBDIR)/libpetsc)
@@ -79,9 +79,11 @@ define SHARED_RECIPE_DEFAULT
   $(call quiet,CLINKER) $(sl_linker_args) -o $@ $^ $(PETSC_EXTERNAL_LIB_BASIC)
 endef
 
+SHARED_RECIPE = $(if $(findstring -LD,$(SL_LINKER_FUNCTION)),$(SHARED_RECIPE_DLL),$(SHARED_RECIPE_DEFAULT))
+
 # with-single-library=1 (default)
 $(libpetsc_libname) : $(srcs.o) | $$(@D)/.DIR
-	$(if $(findstring -LD,$(SL_LINKER_FUNCTION)),$(SHARED_RECIPE_DLL),$(SHARED_RECIPE_DEFAULT))
+	$(SHARED_RECIPE)
 ifneq ($(DSYMUTIL),true)
 	$(call quiet,DSYMUTIL) $@
 endif
@@ -131,7 +133,7 @@ else
   libdep_order = $$(libdep)
 endif
 $(libpetscpkgs_libname) : $(libdep_true) | $(libdep_order) $$(@D)/.DIR
-	$(call quiet,CLINKER) $(sl_linker_args) -o $@ $^ $(PETSC_EXTERNAL_LIB_BASIC)
+	$(SHARED_RECIPE)
 ifneq ($(DSYMUTIL),true)
 	$(call quiet,DSYMUTIL) $@
 endif
