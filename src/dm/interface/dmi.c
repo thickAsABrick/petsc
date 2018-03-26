@@ -217,19 +217,6 @@ PetscErrorCode DMCreateSubDM_Section_Private(DM dm, PetscInt numFields, const Pe
       ierr = DMCreateSubDM(dm->coarseMesh, numFields, fields, NULL, &(*subdm)->coarseMesh);CHKERRQ(ierr);
     }
   }
-#if 0
-  /* We need a way to filter the original SF for given fields:
-       - Keeping the original section around it too much I think
-       - We could keep the distributed section, and subset it
-   */
-  if (dm->sfNatural) {
-    PetscSF sfNatural;
-
-    ierr = PetscSectionCreateSubsection(dm->originalSection, numFields, fields, &(*subdm)->originalSection);CHKERRQ(ierr);
-    ierr = DMPlexCreateGlobalToNaturalPetscSF(*subdm, &sfNatural);CHKERRQ(ierr);
-    ierr = DMPlexSetGlobalToNaturalPetscSF(*subdm, sfNatural);CHKERRQ(ierr);
-  }
-#endif
   PetscFunctionReturn(0);
 }
 
@@ -329,19 +316,6 @@ PetscErrorCode DMCreateSuperDM_Section_Private(DM dms[], PetscInt len, IS **is, 
       }
     }
   }
-#if 0
-  /* We need a way to filter the original SF for given fields:
-       - Keeping the original section around is too much I think
-       - We could keep the distributed section, and subset it
-   */
-  if (len && dms[0]->sfNatural) {
-    PetscSF sfNatural;
-
-    ierr = PetscSectionCreateSupersection(originalSections, len, &(*superdm)->originalSection);CHKERRQ(ierr);
-    ierr = DMPlexCreateGlobalToNaturalPetscSF(*superdm, &sfNatural);CHKERRQ(ierr);
-    ierr = DMPlexSetGlobalToNaturalPetscSF(*superdm, sfNatural);CHKERRQ(ierr);
-  }
-#endif
   ierr = PetscFree3(Nfs, sections, sectionGlobals);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
