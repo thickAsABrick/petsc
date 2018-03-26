@@ -173,8 +173,9 @@ static PetscErrorCode VecView_Node(Vec x,PetscViewer viewer)
 
 static PetscErrorCode VecGetArray_Node(Vec x,PetscScalar **a)
 {
+  Vec_Node       *s = (Vec_Node*)x->data;
   PetscFunctionBegin;
-  *a = *((PetscScalar**)x->data);
+  *a = s->array;
   PetscFunctionReturn(0);
 }
 
@@ -337,18 +338,17 @@ PETSC_EXTERN PetscErrorCode VecCreate_Node(Vec v)
     MPI_Aint    sz;
 
     ierr = MPI_Comm_split_type(PetscObjectComm((PetscObject)v),MPI_COMM_TYPE_SHARED,0,MPI_INFO_NULL,&shmcomm);CHKERRQ(ierr);
-    ierr = MPI_Win_allocate_shared((n+1)*sizeof(PetscScalar),1,MPI_INFO_NULL,shmcomm,&s->array,&win);CHKERRQ(ierr);
+    ierr = MPIU_Win_allocate_shared((n+1)*sizeof(PetscScalar),sizeof(PetscScalar),MPI_INFO_NULL,shmcomm,&s->array,&win);CHKERRQ(ierr);
     ierr               = PetscLogObjectMemory((PetscObject)v,(n+1)*sizeof(PetscScalar));CHKERRQ(ierr);
     ierr               = PetscMemzero(s->array,(n+1)*sizeof(PetscScalar));CHKERRQ(ierr);
     s->array++;    /* create initial space for object state counter */
-    s->array_allocated = s->array;
 
     ierr = MPI_Comm_size(shmcomm,&msize);CHKERRQ(ierr);
     ierr = MPI_Comm_rank(shmcomm,&mrank);CHKERRQ(ierr);
     ierr = PetscMalloc1(msize,&s->winarray);CHKERRQ(ierr);
     for (i=0; i<msize; i++) {
       if (i != mrank) {
-        MPI_Win_shared_query(win,i,&sz,&disp_unit,&s->winarray[i]);
+        MPIU_Win_shared_query(win,i,&sz,&disp_unit,&s->winarray[i]);
         s->winarray[i]++;
       }
     }
