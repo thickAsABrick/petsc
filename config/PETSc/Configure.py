@@ -119,6 +119,7 @@ class Configure(config.base.Configure):
     framework.require('PETSc.options.scalarTypes', self.fblaslapack)
     framework.require('PETSc.options.scalarTypes', self.blaslapack)
     framework.require('PETSc.options.scalarTypes', self.opencl)
+    framework.require('PETSc.Regression', self)
 
     self.programs.headerPrefix   = self.headerPrefix
     self.compilers.headerPrefix  = self.headerPrefix
@@ -1036,7 +1037,7 @@ fprintf(f, "%lu\\n", (unsigned long)sizeof(struct mystruct));
                                               '-@echo "========================================="'])
     else:
       self.addMakeRule('shared_install','',['-@echo "Now to check if the libraries are working do:"',\
-                                              '-@echo "make PETSC_DIR=${PETSC_DIR} PETSC_ARCH=${PETSC_ARCH} test"',\
+                                              '-@echo "make PETSC_DIR=${PETSC_DIR} PETSC_ARCH=${PETSC_ARCH} check"',\
                                               '-@echo "========================================="'])
       return
 
