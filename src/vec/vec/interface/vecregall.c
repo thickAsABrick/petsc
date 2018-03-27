@@ -8,11 +8,7 @@ PETSC_EXTERN PetscErrorCode VecCreate_Shared(Vec);
 #if defined(PETSC_HAVE_MPI_WIN_CREATE)
 PETSC_EXTERN PetscErrorCode VecCreate_Node(Vec);
 #endif
-#if defined(PETSC_HAVE_CUSP)
-PETSC_EXTERN PetscErrorCode VecCreate_SeqCUSP(Vec);
-PETSC_EXTERN PetscErrorCode VecCreate_MPICUSP(Vec);
-PETSC_EXTERN PetscErrorCode VecCreate_CUSP(Vec);
-#elif defined(PETSC_HAVE_VIENNACL)
+#if defined(PETSC_HAVE_VIENNACL)
 PETSC_EXTERN PetscErrorCode VecCreate_SeqViennaCL(Vec);
 PETSC_EXTERN PetscErrorCode VecCreate_MPIViennaCL(Vec);
 PETSC_EXTERN PetscErrorCode VecCreate_ViennaCL(Vec);
@@ -47,11 +43,7 @@ PetscErrorCode VecRegisterAll(void)
 #if defined PETSC_HAVE_MPI_WIN_CREATE
   ierr = VecRegister(VECNODE,       VecCreate_Node);CHKERRQ(ierr);
 #endif
-#if defined PETSC_HAVE_CUSP
-  ierr = VecRegister(VECSEQCUSP,    VecCreate_SeqCUSP);CHKERRQ(ierr);
-  ierr = VecRegister(VECMPICUSP,    VecCreate_MPICUSP);CHKERRQ(ierr);
-  ierr = VecRegister(VECCUSP,       VecCreate_CUSP);CHKERRQ(ierr);
-#elif defined PETSC_HAVE_VIENNACL
+#if defined PETSC_HAVE_VIENNACL
   ierr = VecRegister(VECSEQVIENNACL,    VecCreate_SeqViennaCL);CHKERRQ(ierr);
   ierr = VecRegister(VECMPIVIENNACL,    VecCreate_MPIViennaCL);CHKERRQ(ierr);
   ierr = VecRegister(VECVIENNACL,       VecCreate_ViennaCL);CHKERRQ(ierr);

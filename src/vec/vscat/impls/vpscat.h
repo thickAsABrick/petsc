@@ -35,17 +35,7 @@ PetscErrorCode PETSCMAP1(VecScatterBegin)(VecScatter ctx,Vec xin,Vec yin,InsertM
   nsends  = to->n;
   indices = to->indices;
   sstarts = to->starts;
-#if defined(PETSC_HAVE_CUSP)
-  VecCUSPAllocateCheckHost(xin);
-  if (xin->valid_GPU_array == PETSC_CUSP_GPU) {
-    if (xin->spptr && ctx->spptr) {
-      ierr = VecCUSPCopyFromGPUSome_Public(xin,(PetscCUSPIndices)ctx->spptr);CHKERRQ(ierr);
-    } else {
-      ierr = VecCUSPCopyFromGPU(xin);CHKERRQ(ierr);
-    }
-  }
-  xv = *((PetscScalar**)xin->data);
-#elif defined(PETSC_HAVE_VECCUDA)
+#if defined(PETSC_HAVE_VECCUDA)
   VecCUDAAllocateCheckHost(xin);
   if (xin->valid_GPU_array == PETSC_CUDA_GPU) {
     if (xin->spptr && ctx->spptr) {
@@ -506,4 +496,3 @@ PetscErrorCode PETSCMAP1(VecScatterEndMPI3Node)(VecScatter ctx,Vec xin,Vec yin,I
 #undef PETSCMAP1_b
 #undef PETSCMAP1
 #undef BS
-
