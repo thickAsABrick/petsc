@@ -30,7 +30,7 @@ class Configure(config.base.Configure):
     self.x              = framework.require('config.packages.X', self)
     self.fortrancpp     = framework.require('PETSc.options.fortranCPP', self)
     self.libraryOptions = framework.require('PETSc.options.libraryOptions', self)
-    self.veccuda        = framework.require('config.utilities.veccuda', self)
+    self.veccuda        = framework.require('config.packages.cuda', self)
     return
 
   def configureRegression(self):
