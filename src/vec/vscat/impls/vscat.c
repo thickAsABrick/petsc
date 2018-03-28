@@ -830,7 +830,7 @@ PetscErrorCode VecScatterView_SSToSS(VecScatter in,PetscViewer viewer)
 }
 
 
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
 extern PetscErrorCode VecScatterCreateLocal_PtoS_MPI3(PetscInt,const PetscInt*,PetscInt,const PetscInt*,Vec,Vec,PetscInt,VecScatter);
 extern PetscErrorCode VecScatterCreateLocal_PtoP_MPI3(PetscInt,const PetscInt*,PetscInt,const PetscInt*,Vec,Vec,PetscInt,VecScatter);
 extern PetscErrorCode VecScatterCreateLocal_StoP_MPI3(PetscInt,const PetscInt*,PetscInt,const PetscInt*,Vec,Vec,PetscInt,VecScatter);
@@ -1279,7 +1279,7 @@ static PetscErrorCode VecScatterCreate_PtoS(VecScatter ctx)
         ierr = ISBlockGetLocalSize(iy,&ny);CHKERRQ(ierr);
         ierr = ISBlockGetIndices(iy,&idy);CHKERRQ(ierr);
         if (nx != ny) SETERRQ(PETSC_COMM_SELF,PETSC_ERR_ARG_SIZ,"Local scatter sizes don't match");
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
         if (vec_mpi1_flg) {
           ierr = VecScatterCreateLocal_PtoS_MPI1(nx,idx,ny,idy,xin,yin,bsx,ctx);CHKERRQ(ierr);
         } else {
@@ -1312,7 +1312,7 @@ static PetscErrorCode VecScatterCreate_PtoS(VecScatter ctx)
           idy[0] = ystart/bsx;
           for (il=1; il<nx; il++) idy[il] = idy[il-1] + 1;
         }
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
         if (vec_mpi1_flg) {
           ierr = VecScatterCreateLocal_PtoS_MPI1(nx,idx,nx,idy,xin,yin,bsx,ctx);CHKERRQ(ierr);
         } else {
@@ -1338,7 +1338,7 @@ static PetscErrorCode VecScatterCreate_PtoS(VecScatter ctx)
     ierr = ISGetLocalSize(iy,&ny);CHKERRQ(ierr);
     ierr = ISGetIndices(iy,&idy);CHKERRQ(ierr);
     if (nx != ny) SETERRQ2(PETSC_COMM_SELF,PETSC_ERR_ARG_SIZ,"Local scatter sizes don't match (%D %D)",nx,ny);
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
     if (vec_mpi1_flg) {
       ierr = VecScatterCreateLocal_PtoS_MPI1(nx,idx,ny,idy,xin,yin,1,ctx);CHKERRQ(ierr);
     } else {
@@ -1438,7 +1438,7 @@ static PetscErrorCode VecScatterCreate_StoP(VecScatter ctx)
       if (vscat_mpi1) {
         ierr = VecScatterCreateLocal_StoP_MPI1(nx,idx,nx,idy,xin,yin,bsx,ctx);CHKERRQ(ierr);
       }
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
       else {
         ierr = VecScatterCreateLocal_StoP_MPI3(nx,idx,nx,idy,xin,yin,bsx,ctx);CHKERRQ(ierr);
       }
@@ -1462,7 +1462,7 @@ static PetscErrorCode VecScatterCreate_StoP(VecScatter ctx)
     if (vscat_mpi1) {
       ierr = VecScatterCreateLocal_StoP_MPI1(nx,idx,ny,idy,xin,yin,1,ctx);CHKERRQ(ierr);
     }
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
     else {
       ierr = VecScatterCreateLocal_StoP_MPI3(nx,idx,ny,idy,xin,yin,1,ctx);CHKERRQ(ierr);
     }
@@ -1507,7 +1507,7 @@ static PetscErrorCode VecScatterCreate_PtoP(VecScatter ctx)
   if (vscat_mpi1) {
     ierr = VecScatterCreateLocal_PtoP_MPI1(nx,idx,ny,idy,xin,yin,1,ctx);CHKERRQ(ierr);
   }
-#if defined(PETSC_HAVE_MPI_WIN_CREATE)
+#if defined(PETSC_HAVE_MPI_WIN_CREATE_FEATURE)
   else {
     ierr = VecScatterCreateLocal_PtoP_MPI3(nx,idx,ny,idy,xin,yin,1,ctx);CHKERRQ(ierr);
   }
