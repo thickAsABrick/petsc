@@ -619,7 +619,7 @@ PetscErrorCode VecScatterBegin_SSToSS(VecScatter ctx,Vec x,Vec y,InsertMode addv
   PetscInt              from_first = gen_from->first,from_step = gen_from->step;
   PetscScalar           *xv,*yv;
 #if defined(PETSC_HAVE_VECCUDA)
-  PetscBool             is_veccuda;
+  PetscBool              is_veccuda;
 #endif
 
   PetscFunctionBegin;
