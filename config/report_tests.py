@@ -27,7 +27,7 @@ def inInstallDir():
   else:
     return False
 
-def summarize_results(directory,make,ntime):
+def summarize_results(directory,make,ntime,etime):
   ''' Loop over all of the results files and summarize the results'''
   startdir=os.path.realpath(os.path.curdir)
   try:
@@ -43,10 +43,15 @@ def summarize_results(directory,make,ntime):
     with open(cfile, 'r') as f:
       for line in f:
         l = line.split()
-        summary[l[0]] += l[1:] if l[0] == 'failures' else int(l[1])
-        if l[0] == 'time' and int(l[1])>0:
-            timesummary[cfile]=int(l[1])
-            timelist.append(int(l[1]))
+        if l[0] == 'failures':
+           summary[l[0]] += l[1:] if l[0] == 'failures' else int(l[1])
+        elif l[0] == 'time':
+           if len(l)==1: continue
+           summary[l[0]] += float(l[1])
+           timesummary[cfile]=float(l[1])
+           timelist.append(float(l[1]))
+        else:
+           summary[l[0]] += int(l[1])
 
   failstr=' '.join(summary['failures'])
   print("\n# -------------")
@@ -57,14 +62,16 @@ def summarize_results(directory,make,ntime):
   for t in "success failed todo skip".split():
     percent=summary[t]/float(summary['total'])*100
     print("# %s %d/%d tests (%3.1f%%)" % (t, summary[t], summary['total'], percent))
-  print("#\n# Approximate time (not incl. build time): %s sec"% summary['time'])
+  print("#")
+  if etime:
+    print("# Wall clock time for tests: %s sec"% etime)
+  print("# Approximate CPU time (not incl. build time): %s sec"% summary['time'])
 
   if failstr.strip():
       fail_targets=(
           re.sub('(?<=[0-9]_\w)_.*','',
-          re.sub('_1 ',' ',
           re.sub('cmd-','',
-          re.sub('diff-','',failstr+' '))))
+          re.sub('diff-','',failstr+' ')))
           )
       # Need to make sure we have a unique list
       fail_targets=' '.join(list(set(fail_targets.split())))
@@ -84,7 +91,7 @@ def summarize_results(directory,make,ntime):
       for timelimit in timelist[0:nlim]:
         for cf in timesummary:
           if timesummary[cf] == timelimit:
-              print("# %s: %d sec" % (re.sub('.counts','',cf), timesummary[cf]))
+              print("# %s: %.2f sec" % (re.sub('.counts','',cf), timesummary[cf]))
 
   return
 
@@ -94,6 +101,9 @@ def main():
                       help='Directory containing results of petsc test system',
                       default=os.path.join(os.environ.get('PETSC_ARCH',''),
                                            'tests','counts'))
+    parser.add_option('-e', '--elapsed_time', dest='elapsed_time',
+                      help='Report elapsed time in output',
+                      default=None)
     parser.add_option('-m', '--make', dest='make',
                       help='make executable to report in summary',
                       default='make')
@@ -107,7 +117,7 @@ def main():
       parser.print_usage()
       return
 
-    summarize_results(options.directory,options.make,int(options.time))
+    summarize_results(options.directory,options.make,int(options.time),options.elapsed_time)
 
 if __name__ == "__main__":
         main()
